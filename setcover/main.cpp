@@ -1,17 +1,19 @@
 #include <iostream>
 #include <fstream>
 #include <set>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
-std::string path = "Setcover/data/sc_9_0";
+//std::string path = "Setcover/data/sc_10000_2";
 const int cInfty = 10000000;
 
 std::vector<int> StringToInt(std::string str) {
   std::string int_str;
-  std::vector<int> ans;
+  std::vector<int> ans; 
   for (size_t i = 0; i < str.size(); ++i) {
-    if (str[i] == ' ') {
+    if ((str[i] == ' ') || (str[i] == '\n')) {
       if (int_str.size() > 0) {
         ans.push_back(std::stoi(int_str));
       }
@@ -64,34 +66,47 @@ struct Set {
     }
   }
 
-  void GreedyEur(std::vector<int>& ans) {
-    if (IsCovered()) {
-      return;
-    }
-    int min_ind = -1;
-    double min_cost = cInfty;
-    for (size_t i = 0; i < sets.size(); ++i) {
-      if (sets[i].empty()) {
-        continue;
-      }
-      double cost = static_cast<double>(set_costs[i])
-        / static_cast<double>(sets[i].size());
-      if (cost < min_cost) {
-        min_ind = static_cast<int>(i);
-        min_cost = cost;
-      }
-    }
-    ans.push_back(min_ind);
-    Set(*this, min_ind).GreedyEur(ans);
-  }
-
   bool IsCovered() {
     return uncovered.empty();
   }
 };
 
 std::vector<int> GreedyAlg(Set remain) {
-  
+  if (remain.IsCovered()) {
+    return {};
+  }
+  std::vector<int> ans;
+  while (!remain.IsCovered()) {
+    int min_ind = -1;
+    double min_cost = cInfty;
+    for (size_t i = 0; i < remain.sets.size(); ++i) {
+      if (remain.sets[i].empty()) {
+        continue;
+      }
+      double cost = static_cast<double>(remain.set_costs[i])
+        / static_cast<double>(remain.sets[i].size());
+      if (cost < min_cost) {
+        min_ind = static_cast<int>(i);
+        min_cost = cost;
+      }
+    }
+    if (min_ind == -1) {
+      throw std::runtime_error("Min ind is impossible!!!");
+    }
+    ans.push_back(min_ind);
+    for (auto iter = remain.sets[min_ind].begin();
+      iter != remain.sets[min_ind].end(); ++iter) {
+      remain.uncovered.erase(*iter);
+      for (size_t i = 0; i < remain.sets.size(); ++i) {
+        if (i == min_ind) {
+          continue;
+        }
+        remain.sets[i].erase(*iter);
+      }
+    }
+    remain.sets[min_ind].clear();
+  }
+  return ans;
 }
 
 Set InputData(std::string path) {
@@ -109,17 +124,17 @@ Set InputData(std::string path) {
   return inp;
 }
 
-std::vector<int> SetCover(std::string path) {
+std::vector<int> SetCover(std::string path, std::ostringstream& out) {
   Set inp = InputData(path);
-  std::vector<int> gredeur;
-  inp.GreedyEur(gredeur);
+  std::vector<int> gredeur = GreedyAlg(inp);
+  long long ans = 0;
   for (size_t i = 0; i < gredeur.size(); ++i) {
-    std::cout << gredeur[i] << " ";
+    ans += inp.set_costs[gredeur[i]];
   }
-  std::cout << std::endl;
+  out << ans << "\n";
+  for (size_t i = 0; i < gredeur.size(); ++i) {
+    out << gredeur[i] << " ";
+  }
+  out << std::endl;
   return {0};
-}
-
-int main() {
-  SetCover(path);
 }
