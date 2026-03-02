@@ -68,8 +68,8 @@ int main() {
     inn >> ans_val;
     if (ans_val >= ans_high[i]) {
       if (IsDp(ans)) {
-        std::cout << "Answer is " << ans_val << ", it is accurate, 6 Points received!\n";
-        sum += 6;
+        std::cout << "Answer is " << ans_val << ", it is accurate, 5 Points received!\n";
+        sum += 5;
       } else {
         std::cout << "Answer is " << ans_val << ", 5 Points received!\n";
         sum += 5;
