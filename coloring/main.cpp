@@ -131,42 +131,41 @@ struct ColoringSolver {
   }
 
   std::vector<int> PermEur() {
-    auto start = std::chrono::steady_clock::now();
     std::vector<int> perm(vert_num);
+    std::vector<Pair> deg(vert_num);
     for (int i = 0; i < vert_num; ++i) {
-      perm[i] = i;
+      deg[i] = Pair(gr.edges[i].size(), i);
+    }
+    std::sort(deg.begin(), deg.end(), Comp);
+    for (int i = 0; i < vert_num; ++i) {
+      perm[i] = deg[i].second;
     }
     std::vector<int> past_dist = gr.SetColor(perm);
     std::vector<int> cur_col = gr.color;
     SetBetter();
-    auto end = std::chrono::steady_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
-    for (int iters = 0; iters < 10000; ++iters) {
-      for (int i = 0; i < 100; ++i) {
-        std::vector<Pair> for_sort(past_dist.size());
-        for (int j = 0; j < past_dist.size(); ++j) {
-          for_sort[j] = Pair(past_dist[j], j);
-        }
-        std::sort(for_sort.begin(), for_sort.end(), Comp);
-        std::vector<int> col_rev(past_dist.size());
-        for (int j = 0; j < past_dist.size(); ++j) {
-          col_rev[for_sort[j].second] = j;
-        }
-        for (int j = 1; j < past_dist.size(); ++j) {
-          for_sort[j].first += for_sort[j - 1].first;
-        }
-        for (int j = 0; j < vert_num; ++j) {
-          perm[--for_sort[col_rev[cur_col[j] - 1]].first] = j;
-        }
-        std::vector<int> n_dist = gr.SetColor(perm);
-        if (past_dist == n_dist) {
-          break;
-        }
-        std::swap(past_dist, n_dist);
-        cur_col = gr.color;
-        SetBetter();
+    for (int i = 0; i < 100; ++i) {
+      std::vector<Pair> for_sort(past_dist.size());
+      for (int j = 0; j < past_dist.size(); ++j) {
+        for_sort[j] = Pair(past_dist[j], j);
       }
-      SetRand(perm);
+      std::sort(for_sort.begin(), for_sort.end(), Comp);
+      std::vector<int> col_rev(past_dist.size());
+      for (int j = 0; j < past_dist.size(); ++j) {
+        col_rev[for_sort[j].second] = j;
+      }
+      for (int j = 1; j < past_dist.size(); ++j) {
+        for_sort[j].first += for_sort[j - 1].first;
+      }
+      for (int j = 0; j < vert_num; ++j) {
+        perm[--for_sort[col_rev[cur_col[j] - 1]].first] = j;
+      }
+      std::vector<int> n_dist = gr.SetColor(perm);
+      if (past_dist == n_dist) {
+        break;
+      }
+      std::swap(past_dist, n_dist);
+      cur_col = gr.color;
+      SetBetter();
     }
     return perm;
   }
