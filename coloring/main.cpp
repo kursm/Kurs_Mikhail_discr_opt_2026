@@ -130,20 +130,23 @@ struct ColoringSolver {
     std::shuffle(perm.begin(), perm.end(), gen);
   }
 
-  std::vector<int> PermEur() {
-    std::vector<int> perm(vert_num);
-    std::vector<Pair> deg(vert_num);
-    for (int i = 0; i < vert_num; ++i) {
-      deg[i] = Pair(gr.edges[i].size(), i);
-    }
-    std::sort(deg.begin(), deg.end(), Comp);
-    for (int i = 0; i < vert_num; ++i) {
-      perm[i] = deg[i].second;
+  std::vector<int> PermEur(std::vector<int> perm = {}) {
+    const int cMaxIter = 100;
+    if (perm.size() != vert_num) {
+      perm.resize(vert_num);
+      std::vector<Pair> deg(vert_num);
+      for (int i = 0; i < vert_num; ++i) {
+        deg[i] = Pair(gr.edges[i].size(), i);
+      }
+      std::sort(deg.begin(), deg.end(), Comp);
+      for (int i = 0; i < vert_num; ++i) {
+        perm[i] = deg[i].second;
+      }
     }
     std::vector<int> past_dist = gr.SetColor(perm);
     std::vector<int> cur_col = gr.color;
     SetBetter();
-    for (int i = 0; i < 100; ++i) {
+    for (int i = 0; i < cMaxIter; ++i) {
       std::vector<Pair> for_sort(past_dist.size());
       for (int j = 0; j < past_dist.size(); ++j) {
         for_sort[j] = Pair(past_dist[j], j);
@@ -170,10 +173,97 @@ struct ColoringSolver {
     return perm;
   }
 
+ private:
+ 
+  static bool Comp2(Pair ft, Pair sc) {
+    if ((ft.second > 0) && (sc.second > 0)) {
+      return ft.first < sc.first;
+    }
+    if ((ft.second < 0) && (sc.second > 0)) {
+      return (-ft.second) < sc.second;
+    }
+    if ((ft.second > 0) && (sc.second < 0)) {
+      return ft.second <= (-sc.second);
+    }
+    if ((ft.second < 0) && (sc.second < 0)) {
+      return (((-ft.second) < (-sc.second)) ||
+              ((sc.second == ft.second) && (ft.first < sc.first)));
+    }
+    return true;
+  }
+
+ public:
+
+  std::vector<int> PermLastPush() {
+    const int cMaxIter = 100;
+    std::vector<int> perm = PermEur();
+    int ver = perm.back();
+    int ver_ind = int(perm.size()) - 1;
+    for (int i = 0; i < cMaxIter; ++i) {
+      int colors = gr.color[ver];
+      std::vector<std::vector<int>> sp_col(colors);
+      for (size_t j = 0; j < gr.edges[ver].size(); ++j) {
+        if (gr.color[gr.edges[ver][j]] >= colors) {
+          throw std::runtime_error("Logical assamption failed");
+        }
+        sp_col[gr.color[gr.edges[ver][j]]].push_back(gr.edges[ver][j]);
+      }
+      bool not_done = true;
+      for (int j = 1; j < colors; ++j) {
+        bool is_deletable = true;
+        std::vector<Graph::Mex> free_col(sp_col[j].size(), Graph::Mex(colors));
+        for (size_t k = 0; k < sp_col[j].size(); ++k) {
+          for (size_t l = 0; l < gr.edges[sp_col[j][k]].size(); ++l) {
+            free_col[k].Rem(gr.color[gr.edges[sp_col[j][k]][l]]);
+          }
+          free_col[k].Rem(j);
+          if (free_col[k].GetMex() == colors + 1) {
+            is_deletable = false;
+            break;
+          }
+        }
+        if (is_deletable) {
+          not_done = false;
+          for (size_t k = 0; k < sp_col[j].size(); ++k) {
+            gr.color[sp_col[j][k]] *= -free_col[k].GetMex();
+          }
+          gr.color[ver] = -j;
+          std::vector<Pair> for_sort(vert_num);
+          for (int k = 0; k < vert_num; ++k) {
+            for_sort[k] = Pair(k, gr.color[perm[k]]);
+          }
+          std::sort(for_sort.begin(), for_sort.end(), Comp2);
+          std::vector<int> perm_n(perm.size());
+          for (size_t k = 0; k < perm.size(); ++k) {
+            perm_n[k] = perm[for_sort[k].first];
+          }
+          perm = PermEur(perm_n);
+          ver = perm.back();
+          ver_ind = int(perm.size()) - 1;
+          break;
+        }
+      }
+      if (not_done) {
+        if (ver_ind != 0) {
+          if (gr.color[perm[ver_ind]] == gr.color[perm[ver_ind - 1]]) {
+            --ver_ind;
+            ver = perm[ver_ind];
+            continue;
+          }
+        }
+        break;
+      }
+      if (i == cMaxIter - 1) {
+        std::cout << "Not Enough!\n";
+      }
+    }
+    return perm;
+  }
+
   ColoringSolver (std::string path, std::ostringstream& out) {
     InpData(path);
     gr = Graph(vert_num, inp_edges);
-    PermEur();
+    PermLastPush();
     out << best_known << "\n";
     for (int i = 0; i < vert_num; ++i) {
       out << best_col[i] << " ";
