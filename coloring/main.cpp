@@ -2,13 +2,53 @@
 #include <chrono>
 #include <fstream>
 #include <iostream>
+#include <queue>
 #include <random>
 #include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <unordered_set>
 #include <vector>
+
+struct VectorHasher {
+ private:
+
+  static std::vector<int> Coefs() {
+    const int cNum = 1010;
+    const int cMax = 50000;
+    std::vector<int> ans;
+    std::uniform_int_distribution<int> dist(1, cMax);
+    std::mt19937 gen(std::random_device{}());
+    for (int i = 0; i < cNum; ++i) {
+      ans.push_back(dist(gen));
+    }
+    return ans;
+  }
+
+ public:
+
+  long long prime = 999999937;
+  std::vector<int> coefs;
+
+  VectorHasher() {
+    coefs = Coefs();
+  }
+
+  long long Hash(const std::vector<int>& vec) const {
+    long long sum = 0;
+    if (vec.size() > coefs.size()) {
+      throw std::runtime_error("Not enough coefs for hasher!\n");
+    }
+    for (size_t i = 0; i < vec.size(); ++i) {
+      sum = (sum + (vec[i] + 1) * coefs[i]) % prime;
+    }
+    return sum;
+  }
+};
+
+const VectorHasher vhs;
 
 struct ColoringSolver {
  public:
@@ -64,7 +104,7 @@ struct ColoringSolver {
       color.resize(v_num, -1);
     }
 
-    std::vector<int> SetColor(std::vector<int> perm) {
+    std::vector<int> SetColor(std::vector<int>& perm) {
       std::vector<int> rev_perm(v_num, 0);
       for (size_t i = 0; i < perm.size(); ++i) {
         rev_perm[perm[i]] = i;
@@ -194,9 +234,9 @@ struct ColoringSolver {
 
  public:
 
-  std::vector<int> PermLastPush() {
+  std::vector<int> PermLastPush(std::vector<int> perm = {}) {
     const int cMaxIter = 100;
-    std::vector<int> perm = PermEur();
+    perm = PermEur(perm);
     int ver = perm.back();
     int ver_ind = int(perm.size()) - 1;
     for (int i = 0; i < cMaxIter; ++i) {
@@ -260,10 +300,136 @@ struct ColoringSolver {
     return perm;
   }
 
+  static bool LocalSearchComparator(std::vector<int>& distrib,
+                                    std::vector<int>& distrib_other) {
+    if (distrib.size() != distrib_other.size()) {
+      return distrib.size() < distrib_other.size();
+    }
+    for (int i = int(distrib.size()) - 1; i > -1; --i) {
+      if (distrib[i] != distrib_other[i]) {
+        return distrib[i] < distrib_other[i];
+      }
+    }
+    return false;
+  }
+
+  std::vector<int> best_distrib;
+
+  std::vector<int> FindDistrib(std::vector<int>& perm) {
+    return gr.SetColor(perm);
+  }
+
+ private:
+
+  struct LSHeapEl {
+    std::vector<int> distr;
+    std::vector<int> perm;
+    int reveal;
+
+    LSHeapEl(std::vector<int> d, std::vector<int> p, int r)
+      : distr(d),
+        perm(p),
+        reveal(r)
+    {}
+  };
+
+  struct CustomLess {
+    bool operator()(LSHeapEl& ft, LSHeapEl& sc) {
+      if (ft.distr != sc.distr) {
+        return LocalSearchComparator(ft.distr, sc.distr);
+      }
+      return ft.reveal < sc.reveal;
+    }
+  };
+
+ public:
+
+  std::vector<int> LocalSearch() {
+    const int cMaxIter = 100;
+    const int cMaxDepth = 5;
+    const int cBeamConst = 15;
+    auto start = std::chrono::steady_clock::now();
+    std::vector<int> perm = PermLastPush();
+    if (best_distrib.empty()) {
+      best_distrib = FindDistrib(perm);
+    }
+    std::unordered_set<long long> opened;
+    for (int iter = 0; iter < cMaxIter; ++iter) {
+      auto end = std::chrono::steady_clock::now();
+      auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
+      if (duration.count() > 59) {
+        break;
+      }
+      gr.SetColor(perm);
+      std::vector<int> distrib = FindDistrib(perm);
+      opened.insert(vhs.Hash(perm));
+      std::priority_queue<LSHeapEl, std::vector<LSHeapEl>, CustomLess> que;
+      for (int i = perm.size() - 1; i > -1; --i) {
+        if (gr.color[perm[i]] != gr.color[perm.back()]) {
+          break;
+        }
+        que.push(LSHeapEl(distrib, perm, i));
+      }
+      bool changed = false;
+      for (int i = 0; i < cMaxDepth; ++i) {
+        std::vector<LSHeapEl> for_rev;
+        for (int j = 0; j < cBeamConst; ++j) {
+          if (que.empty()) {
+            break;
+          }
+          for_rev.push_back(que.top());
+          que.pop();
+        }
+        que = std::priority_queue<LSHeapEl, std::vector<LSHeapEl>,
+                                  CustomLess>();
+        for (size_t j = 0; j < for_rev.size(); ++j) {
+          std::vector<int> r_perm(for_rev[j].perm.size());
+          for (int k = 0; k < r_perm.size(); ++k) {
+            r_perm[for_rev[j].perm[k]] = k;
+          }
+          for (int k = 0;
+               k < gr.edges[for_rev[j].perm[for_rev[j].reveal]].size(); ++k) {
+            std::vector<int> n_perm = for_rev[j].perm;
+            std::swap(n_perm[for_rev[j].reveal],
+                      n_perm[r_perm[gr.edges[for_rev[j].perm[for_rev[j].reveal]][k]]]);
+            long long hash = vhs.Hash(n_perm);
+            if (opened.count(hash) == 1) {
+              continue;
+            } else {
+              opened.insert(hash);
+            }
+            std::vector<int> n_dist = FindDistrib(n_perm);
+            if (LocalSearchComparator(n_dist, best_distrib)) {
+              best_distrib = n_dist;
+              changed = true;
+              PermLastPush(n_perm);
+              std::swap(perm, n_perm);
+              break;
+            } else {
+              que.push(LSHeapEl(n_dist, n_perm, for_rev[j].reveal));
+              que.push(LSHeapEl(n_dist, n_perm,
+                  r_perm[gr.edges[for_rev[j].perm[for_rev[j].reveal]][k]]));
+            }
+          }
+          if (changed) {
+            break;
+          }
+        }
+        if (changed) {
+          break;
+        }
+      }
+      if (!changed) {
+        break;
+      }
+    }
+    return perm;
+  }
+
   ColoringSolver (std::string path, std::ostringstream& out) {
     InpData(path);
     gr = Graph(vert_num, inp_edges);
-    PermLastPush();
+    LocalSearch();
     out << best_known << "\n";
     for (int i = 0; i < vert_num; ++i) {
       out << best_col[i] << " ";
