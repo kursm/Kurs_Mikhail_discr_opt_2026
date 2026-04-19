@@ -107,6 +107,17 @@ struct FacilitySolver {
       }
     }
 
+    bool CanTwoOpt(const Guy& rem, const Guy& add) {
+      return taken - rem.demand + add.demand <= cap;
+    }
+
+    db TwoOptBen(const Guy& rem, const Guy& add) {
+      if (!CanTwoOpt(rem, add)) {
+        return -cInfty;
+      }
+      return Dist(*this, rem) - Dist(*this, add);
+    }
+
     void Clean() {
       taken = 0;
       is_open = false;
@@ -267,9 +278,11 @@ struct FacilitySolver {
 
   int OneOpt() {
     int iter = 0;
+    int ii = 0;
     while (true) {
       bool changed = false;
-      for (int i = 0; i < people; ++i) {
+      for (int jj = 0; jj < people; ++jj) {
+        int i = (ii + jj) % people;
         int best_var = guys[i].go_to;
         db ben = 0;
         for (int j = 0; j < shops; ++j) {
@@ -281,10 +294,11 @@ struct FacilitySolver {
           if (ben_other > ben) {
             best_var = j;
             ben = ben_other;
-          }          
+          }
         }
         if (ben > 0) {
           changed = true;
+          ii = i + 1;
           stores[guys[i].go_to].Rem(i, guys[i]);
           stores[best_var].Add(i, guys[i]);
           cur_ans_val -= ben;
@@ -305,6 +319,46 @@ struct FacilitySolver {
     return iter;
   }
 
+  int TwoOpt() {
+    int iter = 0;
+    while (true) {
+      bool changed = false;
+      for (int i = 0; i < people; ++i) {
+        for (int j = i + 1; j < people; ++j) {
+          if (cur_ans[i] == cur_ans[j]) {
+            continue;
+          }
+          int sh_f = cur_ans[i];
+          int sh_s = cur_ans[j];
+          if (stores[sh_f].TwoOptBen(guys[i], guys[j]) +
+              stores[sh_s].TwoOptBen(guys[j], guys[i]) > 0) {
+            changed = true;
+            std::swap(cur_ans[i], cur_ans[j]);
+            cur_ans_val -= stores[sh_f].TwoOptBen(guys[i], guys[j]) +
+                           stores[sh_s].TwoOptBen(guys[j], guys[i]);
+            if (cur_ans_val < 0) {
+              throw std::logic_error("Cur_ans_val is impossible!");
+            }
+            stores[sh_f].Rem(i, guys[i]);
+            stores[sh_s].Rem(j, guys[j]);
+            stores[sh_s].Add(i, guys[i]);
+            stores[sh_f].Add(j, guys[j]);
+            break;
+          }
+        }
+        if (changed) {
+          break;
+        }
+      }
+      if (changed) {
+        ++iter;
+      } else {
+        break;
+      }
+    }
+    return iter;
+  }
+
   void OneTwoOpt() {
     if (best_ans_val == cInfty) {
       throw std::runtime_error("Solution for OneTwoOpt is not initialized");
@@ -313,6 +367,8 @@ struct FacilitySolver {
     CountCurAns();
     SetStoresAndGuys(cur_ans);
     std::cout << "Done iterations: " << OneOpt() << "\n";
+    SetBetter();
+    std::cout << "Done TwoOpt iterations: " << TwoOpt() << "\n";
     SetBetter();
   }
 
