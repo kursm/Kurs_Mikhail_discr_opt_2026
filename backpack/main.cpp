@@ -26,6 +26,7 @@ struct BackpackSolver {
   long long best_ans = 0;
   long long cur_ans;
   long long cMaxMemory = 1LL << 27;
+  double alpha = 0.25;
   int num_of_obj;
   int max_wei;
   int greedy_max_wei;
@@ -143,6 +144,27 @@ struct BackpackSolver {
     return true;
   }
 
+  static bool Comp(Pair& first, Pair& second) {
+    return first.first > second.first;
+  }
+
+  int ApplyEffective(Ans& ans) {
+    std::vector<Pair> profit;
+    for (size_t i = 0; i < ans.index.size(); ++i) {
+      profit.push_back(Pair(double(cost[ans.index[i]]) / wei[ans.index[i]], i));
+    }
+    std::sort(profit.begin(), profit.end(), Comp);
+    int num = ans.index.size();
+    num = static_cast<int>(static_cast<double>(num) * alpha + 1);
+    if (num > ans.index.size()) {
+      num = ans.index.size();
+    }
+    for (int i = 0; i < num; ++i) {
+      AddEl(ans.index[profit[i].second]);
+    }
+    return num;
+  }
+
   int OneGcdEur(long long gcd) {
     MakeObjByGcd(gcd);
     ind_active.clear();
@@ -157,6 +179,9 @@ struct BackpackSolver {
     }
     Ans ans = GreedyDp();
     int outp = 0;
+    if (gcd > 1) {
+      return ApplyEffective(ans);
+    }
     for (size_t i = 0; i < ans.index.size(); ++i) {
       if (AddEl(ans.index[i])) {
         ++outp;
@@ -201,9 +226,6 @@ struct BackpackSolver {
     std::vector<int> logs;
     while (true) {
       int added = OneGcdEur(d);
-      if (d == 1) {
-        break;
-      }
       if (added > 0) {
         c = static_cast<long long>(max_wei - cur_wei) *
             static_cast<long long>(num_of_obj);
@@ -218,9 +240,15 @@ struct BackpackSolver {
       if (TimeToMult(logs)) {
         d *= 2;
         logs.push_back(2);
+        if (ind_active.empty()) {
+          break;
+        }
         if (TimeToBreak(logs)) {
           break;
         }
+      }
+      if (d > max_wei) {
+        break;
       }
       auto end = std::chrono::steady_clock::now();
       auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
