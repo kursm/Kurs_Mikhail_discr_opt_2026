@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <fstream>
 #include <iostream>
 #include <vector>
@@ -7,215 +8,265 @@
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include "coin/ClpSimplex.hpp"
+#include "coin/CoinHelperFunctions.hpp"
+#include "coin/CoinTime.hpp"
+#include "coin/CoinBuild.hpp"
+#include "coin/CoinModel.hpp"
 
-// std::string pathss = "./data/ks_4_0";
+struct BackpackSolver {
+ private:
 
-struct Objects {
   std::vector<int> cost;
   std::vector<int> wei;
-  std::vector<int> ind;
+  std::vector<int> wei_greedy;
+  std::vector<bool> cur_taken;
+  std::vector<bool> best_taken;
+  std::set<int> ind_active;
+  long long best_ans = 0;
+  long long cur_ans;
+  long long cMaxMemory = 1LL << 27;
   int num_of_obj;
   int max_wei;
+  int greedy_max_wei;
+  int cur_wei = 0;
+  using Pair = std::pair<long double, int>;
 
-  Objects () = default;
+  struct Ans {
+    long long sum_cost;
+    std::vector<int> index;
+  };
 
-  Objects (Objects& other, std::vector<int>& rem_ind) {
-    std::set<int> bad_ind;
-    for (int i = 0; i < rem_ind.size(); ++i) {
-      bad_ind.insert(rem_ind[i]);
+  void InpData(std::string path) {
+    std::ifstream input_file(path);
+    input_file >> num_of_obj >> max_wei;
+    cost.resize(num_of_obj);
+    wei.resize(num_of_obj);
+    for (size_t i = 0; i < num_of_obj; ++i) {
+      input_file >> cost[i] >> wei[i];
     }
-    long long sum_wei = 0;
-    for (int i = 0; i < other.num_of_obj; ++i) {
-      if (bad_ind.count(other.ind[i]) == 1) {
-        sum_wei += other.wei[i];
-      } else {
-        cost.push_back(other.cost[i]);
-        wei.push_back(other.wei[i]);
-        ind.push_back(other.ind[i]);
-      }
-    }
-    num_of_obj = cost.size();
-    max_wei = other.max_wei - sum_wei;
-    RemoveImp();
   }
 
-  void RemoveImp() {
-    static int uses = 0;
-    std::vector<int> big_ind;
-    for (size_t i = 0; i < num_of_obj; ++i) {
-      if (wei[i] > max_wei) {
-        big_ind.push_back(i);
+  bool DpIsOk() {
+    return static_cast<long long>(max_wei) *
+           static_cast<long long>(num_of_obj) <= cMaxMemory;
+  }
+
+  Ans DpAlg() {
+    if (!DpIsOk()) {
+      throw std::runtime_error("Dp Alg will work for too long and use too much memory!!!");
+    }
+    std::vector<std::vector<int>> max_cost(num_of_obj + 1,
+                                           std::vector<int>(max_wei + 1, 0));
+    for (int i = 1; i <= num_of_obj; ++i) {
+      for (int j = 1; j <= max_wei; ++j) {
+        if (wei[i - 1] <= j) {
+          max_cost[i][j] = std::max(max_cost[i - 1][j],
+                                    max_cost[i - 1][j - wei[i - 1]] +
+                                    cost[i - 1]);
+        } else {
+          max_cost[i][j] = max_cost[i - 1][j];
+        }
       }
     }
-    if (big_ind.empty()) {
+    Ans ret;
+    ret.sum_cost = max_cost[num_of_obj][max_wei];
+    int indi = num_of_obj;
+    int indj = max_wei;
+    while ((indi > 0) && (indj > 0)) {
+      if (max_cost[indi - 1][indj] != max_cost[indi][indj]) {
+        ret.index.push_back(indi - 1);
+        indj -= wei[indi - 1];
+      }
+      --indi;
+    }
+    return ret;
+  }
+
+  Ans GreedyDp() {
+    std::vector<std::vector<int>> max_cost(
+        ind_active.size() + 1, std::vector<int>(greedy_max_wei + 1, 0));
+    int i = 0;
+    std::vector<int> decode;
+    decode.reserve(ind_active.size());
+    for (auto it = ind_active.begin(); it != ind_active.end(); ++it) {
+      ++i;
+      decode.push_back(*it);
+      for (int j = 1; j <= greedy_max_wei; ++j) {
+        if (wei_greedy[*it] <= j) {
+          max_cost[i][j] = std::max(max_cost[i - 1][j],
+                                    max_cost[i - 1][j - wei_greedy[*it]] +
+                                    cost[*it]);
+        } else {
+          max_cost[i][j] = max_cost[i - 1][j];
+        }
+      }
+    }
+    Ans ret;
+    ret.sum_cost = max_cost[ind_active.size()][greedy_max_wei];
+    int indi = ind_active.size();
+    int indj = greedy_max_wei;
+    while ((indi > 0) && (indj > 0)) {
+      if (max_cost[indi - 1][indj] != max_cost[indi][indj]) {
+        ret.index.push_back(decode[indi - 1]);
+        indj -= wei_greedy[decode[indi - 1]];
+      }
+      --indi;
+    }
+    return ret;
+  }
+
+  void MakeObjByGcd(long long c) {
+    if (wei_greedy.size() != num_of_obj) {
+      wei_greedy.resize(num_of_obj);
+    }
+    for (int i = 0; i < num_of_obj; ++i) {
+      wei_greedy[i] = wei[i];
+      if (wei_greedy[i] % c != 0) {
+        wei_greedy[i] += c - (wei_greedy[i] % c);
+      }
+      wei_greedy[i] /= c;
+    }
+    greedy_max_wei = (max_wei - cur_wei) / c;
+  }
+
+  bool AddEl(int index) {
+    if (cur_taken[index]) {
+      return false;
+    }
+    if (cur_wei + wei[index] > max_wei) {
+      return false;
+    }
+    cur_taken[index] = true;
+    cur_wei += wei[index];
+    cur_ans += cost[index];
+    return true;
+  }
+
+  int OneGcdEur(long long gcd) {
+    MakeObjByGcd(gcd);
+    ind_active.clear();
+    for (int i = 0; i < num_of_obj; ++i) {
+      if (cur_taken[i]) {
+        continue;
+      }
+      if (wei_greedy[i] > greedy_max_wei) {
+        continue;
+      }
+      ind_active.insert(i);
+    }
+    Ans ans = GreedyDp();
+    int outp = 0;
+    for (size_t i = 0; i < ans.index.size(); ++i) {
+      if (AddEl(ans.index[i])) {
+        ++outp;
+      } else {
+        throw std::runtime_error("Something strange!");
+      }
+    }
+    return outp;
+  }
+
+  bool TimeToMult(std::vector<int>& logs) {
+    if (logs.size() < 5) {
+      return false;
+    }
+    for (int i = 0; i < 5; ++i) {
+      if (logs[logs.size() - i - 1] != 1) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool TimeToBreak(std::vector<int>& logs) {
+    if (logs.size() < 20) {
+      return false;
+    }
+    for (int i = 0; i < 4; ++i) {
+      if (logs[logs.size() - 5 * i - 1] != 2) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void GcdEur() {
+    auto start = std::chrono::steady_clock::now();
+    long long c = static_cast<long long>(max_wei) *
+                  static_cast<long long>(num_of_obj);
+    c /= cMaxMemory;
+    ++c;
+    long long d = c;
+    std::vector<int> logs;
+    while (true) {
+      int added = OneGcdEur(d);
+      if (d == 1) {
+        break;
+      }
+      if (added > 0) {
+        c = static_cast<long long>(max_wei - cur_wei) *
+            static_cast<long long>(num_of_obj);
+        c /= cMaxMemory;
+        ++c;
+        d = c;
+        logs.push_back(0);
+        continue;
+      }
+      ++d;
+      logs.push_back(1);
+      if (TimeToMult(logs)) {
+        d *= 2;
+        logs.push_back(2);
+        if (TimeToBreak(logs)) {
+          break;
+        }
+      }
+      auto end = std::chrono::steady_clock::now();
+      auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
+      if (duration.count() > 120) {
+        break;
+      }
+    }
+  }
+
+  void FindAns() {
+    cur_ans = 0;
+    for (size_t i = 0; i < num_of_obj; ++i) {
+      cur_ans += cost[i] * static_cast<int>(cur_taken[i]);
+    }
+  }
+
+  void SetBetter() {
+    if (cur_ans > best_ans) {
+      best_taken = cur_taken;
+      best_ans = cur_ans;
+    }
+  }
+
+ public:
+  BackpackSolver(std::string path, std::ostringstream& out) {
+    InpData(path);
+    if (DpIsOk()) {
+      Ans ans = DpAlg();
+      out << ans.sum_cost << "\n";
+      for (int i = 0; i < ans.index.size(); ++i) {
+        out << ans.index[i] << " ";
+      }
+      out << "\nFull DP\n";
       return;
     }
-    ++uses;
-    std::vector<int> cost_new;
-    std::vector<int> wei_new;
-    std::vector<int> ind_new;
-    int i = -1;
-    int j = 0;
-    while (++i < cost.size()) {
-      if (big_ind.size() < j) {
-        continue;
+    cur_taken.resize(num_of_obj, false);
+    cur_ans = 0;
+    GcdEur();
+    FindAns();
+    SetBetter();
+    out << best_ans << "\n";
+    for (size_t i = 0; i < num_of_obj; ++i) {
+      if (best_taken[i]) {
+        out << i << ' ';
       }
-      if (big_ind[j] == i) {
-        ++j;
-        continue;
-      }
-      cost_new.push_back(cost[i]);
-      wei_new.push_back(wei[i]);
-      ind_new.push_back(ind[i]);
     }
-    std::swap(cost, cost_new);
-    std::swap(wei, wei_new);
-    std::swap(ind, ind_new);
-    num_of_obj = wei.size();
+    out << "\n";
   }
 };
-
-struct Ans {
-  long long sum_cost;
-  std::vector<int> index;
-};
-
-Objects InpData(std::string path) {
-  std::ifstream input_file(path);
-  Objects ans;
-  input_file >> ans.num_of_obj >> ans.max_wei;
-  ans.cost.resize(ans.num_of_obj);
-  ans.wei.resize(ans.num_of_obj);
-  for (size_t i = 0; i < ans.num_of_obj; ++i) {
-    input_file >> ans.cost[i] >> ans.wei[i];
-    ans.ind.push_back(i);
-  }
-  return ans;
-}
-
-const long long cMaxMemory = 1LL << 27;
-
-bool DpIsOk(Objects& obj) {
-  return static_cast<long long>(obj.max_wei) *
-         static_cast<long long>(obj.num_of_obj) <= cMaxMemory;
-}
-
-Ans DpAlg(Objects& obj) {
-  if (!DpIsOk(obj)) {
-    throw std::runtime_error("Dp Alg will work for too long and use too much!!!");
-  }
-  std::vector<std::vector<int>> max_cost(obj.num_of_obj + 1,
-                                         std::vector<int>(obj.max_wei + 1, 0));
-  long long debug = 0;
-  for (int i = 1; i <= obj.num_of_obj; ++i) {
-    for (int j = 1; j <= obj.max_wei; ++j) {
-      if (obj.wei[i - 1] <= j) {
-        max_cost[i][j] = std::max(max_cost[i - 1][j],
-                                  max_cost[i - 1][j - obj.wei[i - 1]] +
-                                  obj.cost[i - 1]);
-      } else {
-        max_cost[i][j] = max_cost[i - 1][j];
-      }
-      debug += max_cost[i][j];
-    }
-  }
-  Ans ret;
-  ret.sum_cost = max_cost[obj.num_of_obj][obj.max_wei];
-  int indi = obj.num_of_obj;
-  int indj = obj.max_wei;
-  while ((indi > 0) && (indj > 0)) {
-    if (max_cost[indi - 1][indj] != max_cost[indi][indj]) {
-      ret.index.push_back(obj.ind[indi - 1]);
-      indj -= obj.wei[indi - 1];
-    }
-    --indi;
-  }
-  return ret;
-}
-
-using Pair = std::pair<long double, int>;
-
-bool Compare(Pair first, Pair second) {
-  return first.first > second.first;
-}
-
-Ans GreedyPush(Objects& obj) {
-  std::vector<Pair> den;
-  den.reserve(obj.num_of_obj);
-  for (int i = 0; i < obj.num_of_obj; ++i) {
-    den.push_back(Pair(obj.cost[i] / obj.wei[i], i));
-  }
-  std::sort(den.begin(), den.end(), Compare);
-  int cur_wei = 0;
-  Ans ans;
-  for (size_t i = 0; i < den.size(); ++i) {
-    if (cur_wei + obj.wei[den[i].second] <= obj.max_wei) {
-      ans.sum_cost += obj.cost[den[i].second];
-      ans.index.push_back(obj.ind[den[i].second]);
-    }
-  }
-  return ans;
-}
-
-Objects MakeObjByGcd(Objects& obj, int c) {
-  Objects ans = obj;
-  for (int i = 0; i < ans.num_of_obj; ++i) {
-    if (ans.wei[i] % c != 0) {
-      ans.wei[i] += c - (ans.wei[i] % c);
-    }
-    ans.wei[i] /= c;
-  }
-  ans.max_wei /= c;
-  ans.RemoveImp();
-  return ans;
-}
-
-std::vector<int> GcdEur(Objects& obj, int speed_log = 0) {
-  if (DpIsOk(obj)) {
-    return DpAlg(obj).index;
-  }
-  long long c = static_cast<long long>(obj.max_wei) *
-                static_cast<long long>(obj.num_of_obj);
-  c /= cMaxMemory;
-  c /= (1 << speed_log);
-  ++c;
-  Objects new_obj = MakeObjByGcd(obj, c);
-  Ans ans = DpAlg(new_obj);
-  Objects left(obj, ans.index);
-  if (left.max_wei > (1 << (speed_log + 1))) {
-    std::vector<int> ans_also = GcdEur(left, speed_log + 1);
-    for (int i = 0; i < ans_also.size(); ++i) {
-      ans.index.push_back(ans_also[i]);
-    }
-    return ans.index;
-  }
-  std::vector<int> ans_also = GreedyPush(left).index;
-  for (int i = 0; i < ans_also.size(); ++i) {
-    ans.index.push_back(ans_also[i]);
-  }
-  return ans.index;
-}
-
-void BackPack(std::string path, std::ostringstream& out) {
-  //std::ostream& out = std::cout;
-  Objects obj = InpData(path);
-  if (DpIsOk(obj)) {
-    Ans ans = DpAlg(obj);
-    out << ans.sum_cost << "\n";
-    for (int i = 0; i < ans.index.size(); ++i) {
-      out << ans.index[i] << " ";
-    }
-    out << "\nFull DP\n";
-    return;
-  }
-  std::vector<int> index = GcdEur(obj);
-  long long sum_cost = 0;
-  for (size_t i = 0; i < index.size(); ++i) {
-    sum_cost += obj.cost[index[i]];
-  }
-  out << sum_cost << "\n";
-  for (size_t i = 0; i < index.size(); ++i) {
-    out << index[i] << ' ';
-  }
-  out << "\n";
-}
