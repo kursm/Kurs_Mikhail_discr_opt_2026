@@ -54,8 +54,9 @@ bool IsDp(std::string ans) {
 int main() {
   int sum = 0;
   for (int i = 0; i < 6; ++i) {
+    auto start = std::chrono::steady_clock::now();
     std::ostringstream out;
-    BackPack(path + tests[i], out);
+    BackpackSolver(path + tests[i], out);
     std::string ans = out.str();
     if (Correct(ans, i)) {
       std::cout << "Test " << i + 1 << ": correct answer; "; 
@@ -63,13 +64,16 @@ int main() {
       std::cout << "Test " << i + 1 << ": incorrect answer!!;\n";
       continue;
     }
+    auto end = std::chrono::steady_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    std::cout << "Time taken: " << double(duration.count()) / 1000 << " seconds" << "\n";
     std::istringstream inn(ans);
     long long ans_val;
     inn >> ans_val;
     if (ans_val >= ans_high[i]) {
       if (IsDp(ans)) {
-        std::cout << "Answer is " << ans_val << ", it is accurate, 5 Points received!\n";
-        sum += 5;
+        std::cout << "Answer is " << ans_val << ", it is accurate, 6 Points received!\n";
+        sum += 6;
       } else {
         std::cout << "Answer is " << ans_val << ", 5 Points received!\n";
         sum += 5;
