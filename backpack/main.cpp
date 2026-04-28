@@ -9,10 +9,6 @@
 #include <string>
 #include <tuple>
 #include "coin/ClpSimplex.hpp"
-#include "coin/CoinHelperFunctions.hpp"
-#include "coin/CoinTime.hpp"
-#include "coin/CoinBuild.hpp"
-#include "coin/CoinModel.hpp"
 
 struct BackpackSolver {
  private:
@@ -20,17 +16,22 @@ struct BackpackSolver {
   std::vector<int> cost;
   std::vector<int> wei;
   std::vector<int> wei_greedy;
+  std::vector<int> ones_taken;
   std::vector<bool> cur_taken;
   std::vector<bool> best_taken;
   std::set<int> ind_active;
   long long best_ans = 0;
   long long cur_ans;
-  long long cMaxMemory = 1LL << 27;
+  long long cMaxMemory = 1LL << 20;
   double alpha = 0.25;
+  const double cEps = 1E-5;
+  double is_one_after = 0.9;
   int num_of_obj;
   int max_wei;
   int greedy_max_wei;
   int cur_wei = 0;
+  int cLp_iter = 500;
+  bool is_accurate = false;
   using Pair = std::pair<long double, int>;
 
   struct Ans {
@@ -142,6 +143,28 @@ struct BackpackSolver {
     cur_wei += wei[index];
     cur_ans += cost[index];
     return true;
+  }
+
+  bool CanAdd(int index) {
+    if (cur_taken[index]) {
+      return false;
+    }
+    if (cur_wei + wei[index] > max_wei) {
+      return false;
+    }
+    return true;
+  }
+
+  bool CanAddJustOne(int i1, int i2) {
+    if ((cur_taken[i1]) || (cur_taken[i2])) {
+      return false;
+    }
+    if ((cur_wei + wei[i1] <= max_wei) &&
+        (cur_wei + wei[i2] <= max_wei) &&
+        (cur_wei + wei[i1] + wei[i2] > max_wei)) {
+      return true;
+    }
+    return false;
   }
 
   static bool Comp(Pair& first, Pair& second) {
@@ -272,10 +295,194 @@ struct BackpackSolver {
     }
   }
 
+  void AddInitial(ClpSimplex& model) {
+    std::vector<int> index(num_of_obj);
+    std::vector<double> weight_cond(num_of_obj);
+    for (int i = 0; i < num_of_obj; ++i) {
+      index[i] = i;
+      weight_cond[i] = wei[i];
+    }
+    model.addRow(num_of_obj, index.data(), weight_cond.data(), -COIN_DBL_MAX, max_wei);
+  }
+
+  void AccurateFound(std::vector<int>& non_zero) {
+    for (int i = 0; i < num_of_obj; ++i) {
+      cur_taken[i] = false;
+    }
+    cur_ans = 0;
+    cur_wei = 0;
+    for (size_t i = 0; i < non_zero.size(); ++i) {
+      cur_taken[non_zero[i]] = true;
+      cur_ans += cost[non_zero[i]];
+      cur_wei += wei[non_zero[i]];
+    }
+    /*if (best_ans > cur_ans) {
+      throw std::logic_error("Best solution is worse than existing");
+    }*/
+    SetBetter();
+    is_accurate = true;
+  }
+
+  void GetSol(std::vector<int>& non_zero, std::vector<double>& value, int non_one) {
+    for (int i = 0; i < num_of_obj; ++i) {
+      cur_taken[i] = false;
+    }
+    ones_taken.clear();
+    cur_ans = 0;
+    cur_wei = 0;
+    std::vector<Pair> for_sort;
+    for (size_t i = 0; i < non_zero.size(); ++i) {
+      if (value[i] > is_one_after) {
+        if (AddEl(non_zero[i])) {
+          ones_taken.push_back(non_zero[i]);
+        }
+      }
+      if (non_one < 2) {
+        for_sort.push_back(Pair(double(cost[non_zero[i]]) /
+                                double(wei[non_zero[i]]), i));
+      }
+    }
+    if (non_one < 2) {
+      std::sort(for_sort.begin(), for_sort.end(), Comp);
+      for (size_t i = 0; i < for_sort.size(); ++i) {
+        AddEl(non_zero[for_sort[i].second]);
+      }
+    }
+    SetBetter();
+  }
+
+  void AddCond(std::vector<int>& non_zero, ClpSimplex& model) {
+    int size = non_zero.size();
+    std::vector<int> index(size);
+    std::vector<double> weight_cond(size, 1.0);
+    for (int i = 0; i < size; ++i) {
+      index[i] = non_zero[i];
+    }
+    model.addRow(size, index.data(), weight_cond.data(), -COIN_DBL_MAX, size - 1);
+  }
+
+  bool IsNotPushible(std::vector<int>& non_zero) {
+    bool is_addable = false;
+    for (int i = 0; i < num_of_obj; ++i) {
+      if (CanAdd(i)) {
+        is_addable = false;
+      }
+    }
+    return true;
+  }
+
+  void AddCleverCond(std::vector<int>& non_zero, std::vector<double>& value,
+                     ClpSimplex& model) {
+    if (IsNotPushible(non_zero)) {
+      FindAns();
+      SetBetter();
+      int size = non_zero.size();
+      std::vector<int> index(size);
+      std::vector<double> weight_cond(size, 1.0);
+      for (int i = 0; i < size; ++i) {
+        index[i] = non_zero[i];
+      }
+      model.addRow(size, index.data(), weight_cond.data(), -COIN_DBL_MAX, size - 2);
+    }
+    if (static_cast<long long>(max_wei - cur_wei) * num_of_obj < cMaxMemory) {
+      OneGcdEur(1);
+      SetBetter();
+      int size = ones_taken.size();
+      std::vector<double> weight_cond(size, 1.0);
+      model.addRow(size, ones_taken.data(), weight_cond.data(), -COIN_DBL_MAX, size - 1);
+    } else {
+      int size = non_zero.size();
+      for (int i = 0; i < size; ++i) {
+        for (int j = i + 1; j < size; ++j) {
+          if (CanAddJustOne(non_zero[i], non_zero[j])) {
+            int cond_size = ones_taken.size();
+            ones_taken.push_back(non_zero[i]);
+            ones_taken.push_back(non_zero[j]);
+            std::vector<double> weight_cond(cond_size + 2, 1.0);
+            model.addRow(cond_size + 2, ones_taken.data(), weight_cond.data(),
+                         -COIN_DBL_MAX, cond_size + 1);
+            ones_taken.pop_back();
+            ones_taken.pop_back();       
+          }
+        }
+      }
+    }
+  }
+
+  bool IsSame(double* prev_ans, double* ans) {
+    for (int i = 0; i < num_of_obj; ++i) {
+      if (std::abs(prev_ans[i] - ans[i]) > cEps) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void SolveCheckAndAdd(ClpSimplex& model) {
+    double* prev_ans = nullptr;
+    for (int i = 0; i < cLp_iter; ++i) {
+      model.dual();
+      double* ans = model.primalColumnSolution();
+      std::vector<int> non_zero;
+      std::vector<double> value;
+      int non_one_count = 0;
+      int sum_wei = 0;
+      for (int i = 0; i < num_of_obj; ++i) {
+        if (ans[i] > cEps) {
+          non_zero.push_back(i);
+          value.push_back(ans[i]);
+          sum_wei += wei[i];
+          if (ans[i] < is_one_after) {
+            ++non_one_count;
+          }
+        }
+      }
+      if (sum_wei <= max_wei) {
+        AccurateFound(non_zero);
+        break;
+      }
+      GetSol(non_zero, value, non_one_count);
+      if (prev_ans == nullptr) {
+        AddCond(non_zero, model);
+      } else {
+        if (IsSame(prev_ans, ans)) {
+          AddCleverCond(non_zero, value, model);
+        } else {
+          AddCond(non_zero, model);
+        }
+      }
+      if (i % (cLp_iter / 10) == 0) {
+        for (size_t j = 0; j < non_zero.size(); ++j) {
+          std::cout << non_zero[j] << " ";
+        } std::cout << "\n";
+      }
+      prev_ans = ans;
+    }
+  }
+
+  void LpSolve() {
+    ClpSimplex  model;
+    model.setLogLevel(0);
+    std::vector<double> cost_m(num_of_obj);
+    std::vector<double> lower(num_of_obj, 0);
+    std::vector<double> upper(num_of_obj, 1);
+    for (size_t i = 0; i < num_of_obj; ++i) {
+      cost_m[i] = -cost[i];
+    }
+    model.resize(0, num_of_obj);
+    for (int j = 0; j < num_of_obj; ++j) {
+      model.setObjectiveCoefficient(j, cost_m[j]);
+      model.setColumnLower(j, lower[j]);
+      model.setColumnUpper(j, upper[j]);
+    }
+    AddInitial(model);
+    SolveCheckAndAdd(model);
+  }
+
  public:
   BackpackSolver(std::string path, std::ostringstream& out) {
     InpData(path);
-    if (DpIsOk()) {
+    /*if (DpIsOk()) {
       Ans ans = DpAlg();
       out << ans.sum_cost << "\n";
       for (int i = 0; i < ans.index.size(); ++i) {
@@ -283,12 +490,13 @@ struct BackpackSolver {
       }
       out << "\nFull DP\n";
       return;
-    }
+    }*/
     cur_taken.resize(num_of_obj, false);
     cur_ans = 0;
-    GcdEur();
-    FindAns();
-    SetBetter();
+    //GcdEur();
+    //FindAns();
+    //SetBetter();
+    LpSolve();
     out << best_ans << "\n";
     for (size_t i = 0; i < num_of_obj; ++i) {
       if (best_taken[i]) {
@@ -296,5 +504,8 @@ struct BackpackSolver {
       }
     }
     out << "\n";
+    if (is_accurate) {
+      out << "Simplex is sure\n";
+    }
   }
 };
