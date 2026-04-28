@@ -2,6 +2,7 @@
 #include <chrono>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <vector>
 #include <set>
 #include <sstream>
@@ -30,7 +31,8 @@ struct BackpackSolver {
   int max_wei;
   int greedy_max_wei;
   int cur_wei = 0;
-  int cLp_iter = 500;
+  int cLp_iter = 5000;
+  int cMany = 3;
   bool is_accurate = false;
   using Pair = std::pair<long double, int>;
 
@@ -142,6 +144,16 @@ struct BackpackSolver {
     cur_taken[index] = true;
     cur_wei += wei[index];
     cur_ans += cost[index];
+    return true;
+  }
+
+  bool RemEl(int index) {
+    if (!cur_taken[index]) {
+      return false;
+    }
+    cur_taken[index] = false;
+    cur_wei -= wei[index];
+    cur_ans -= cost[index];
     return true;
   }
 
@@ -316,9 +328,6 @@ struct BackpackSolver {
       cur_ans += cost[non_zero[i]];
       cur_wei += wei[non_zero[i]];
     }
-    /*if (best_ans > cur_ans) {
-      throw std::logic_error("Best solution is worse than existing");
-    }*/
     SetBetter();
     is_accurate = true;
   }
@@ -371,6 +380,15 @@ struct BackpackSolver {
     return true;
   }
 
+  static std::string VecToStr(std::vector<int>& vec) {
+    std::string result;
+    for (size_t i = 0; i < vec.size(); ++i) {
+        if (i > 0) result += ",";
+        result += std::to_string(vec[i]);
+    }
+    return result;
+  }
+
   void AddCleverCond(std::vector<int>& non_zero, std::vector<double>& value,
                      ClpSimplex& model) {
     if (IsNotPushible(non_zero)) {
@@ -391,18 +409,29 @@ struct BackpackSolver {
       std::vector<double> weight_cond(size, 1.0);
       model.addRow(size, ones_taken.data(), weight_cond.data(), -COIN_DBL_MAX, size - 1);
     } else {
-      int size = non_zero.size();
-      for (int i = 0; i < size; ++i) {
-        for (int j = i + 1; j < size; ++j) {
-          if (CanAddJustOne(non_zero[i], non_zero[j])) {
-            int cond_size = ones_taken.size();
-            ones_taken.push_back(non_zero[i]);
-            ones_taken.push_back(non_zero[j]);
-            std::vector<double> weight_cond(cond_size + 2, 1.0);
-            model.addRow(cond_size + 2, ones_taken.data(), weight_cond.data(),
-                         -COIN_DBL_MAX, cond_size + 1);
-            ones_taken.pop_back();
-            ones_taken.pop_back();       
+      bool brake = false;
+      for (int i = 0; i < non_zero.size(); ++i) {
+        for (int j = i + 1; j < non_zero.size(); ++j) {
+          if ((value[i] > 0.2) && (value[j] > 0.2) &&
+              (std::abs(value[i] + value[j] - 1) < cEps)) {
+            int i1 = i;
+            int j1 = j;
+            if (value[i1] < value[j1]) {
+              std::swap(i1, j1);
+            }
+            if (AddEl(non_zero[i1])) {
+              long long value = static_cast<long long>(max_wei - cur_wei) * num_of_obj;
+              if (value < cMaxMemory) {
+                OneGcdEur(1);
+                SetBetter();
+                int size = ones_taken.size() + 1;
+                std::vector<double> weight_cond(size, 1.0);
+                ones_taken.push_back(non_zero[i1]);
+                model.addRow(size, ones_taken.data(), weight_cond.data(), -COIN_DBL_MAX, size - 1);
+                ones_taken.pop_back();
+              }
+              RemEl(non_zero[i1]);
+            }
           }
         }
       }
@@ -418,7 +447,18 @@ struct BackpackSolver {
     return true;
   }
 
+  void DecreaseSeriously(std::vector<int>& non_zero, ClpSimplex& model, int how) {
+    int size = non_zero.size();
+    std::vector<int> index(size);
+    std::vector<double> weight_cond(size, 1.0);
+    for (int i = 0; i < size; ++i) {
+      index[i] = non_zero[i];
+    }
+    model.addRow(size, index.data(), weight_cond.data(), -COIN_DBL_MAX, size - how - 1);
+  }
+
   void SolveCheckAndAdd(ClpSimplex& model) {
+    std::map<std::string, int> seen;
     double* prev_ans = nullptr;
     for (int i = 0; i < cLp_iter; ++i) {
       model.dual();
@@ -447,14 +487,18 @@ struct BackpackSolver {
       } else {
         if (IsSame(prev_ans, ans)) {
           AddCleverCond(non_zero, value, model);
+          std::string problem = VecToStr(non_zero);
+          if (seen.count(problem) == 1) {
+            ++seen[problem];
+          } else {
+            seen[problem] = 1;
+          }
+          if (seen[problem] % cMany == 0) {
+            DecreaseSeriously(non_zero, model, seen[problem] / cMany);
+          }
         } else {
           AddCond(non_zero, model);
         }
-      }
-      if (i % (cLp_iter / 10) == 0) {
-        for (size_t j = 0; j < non_zero.size(); ++j) {
-          std::cout << non_zero[j] << " ";
-        } std::cout << "\n";
       }
       prev_ans = ans;
     }
@@ -504,8 +548,8 @@ struct BackpackSolver {
       }
     }
     out << "\n";
-    if (is_accurate) {
+    /*if (is_accurate) {
       out << "Simplex is sure\n";
-    }
+    }*/
   }
 };
