@@ -46,7 +46,7 @@ bool IsDp(std::string ans) {
   std::getline(inn, line);
   std::getline(inn, line);
   if (std::getline(inn, line)) {
-    return (line == "Full DP");
+    return (line == "Full DP") || (line == "Simplex is sure");
   }
   return false;
 }

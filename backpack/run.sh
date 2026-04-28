@@ -1,5 +1,5 @@
 #!/bin/bash
 
-g++ -O3 checker.cpp -o runbin
+g++ -O3 checker.cpp -lClp -lCoinUtils -o runbin
 ./runbin
 rm runbin
