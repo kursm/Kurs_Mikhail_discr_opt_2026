@@ -14,12 +14,14 @@
 struct BackpackSolver {
  private:
 
+  using Pair = std::pair<long double, int>;
   std::vector<int> cost;
   std::vector<int> wei;
   std::vector<int> wei_greedy;
   std::vector<int> ones_taken;
   std::vector<bool> cur_taken;
   std::vector<bool> best_taken;
+  std::vector<Pair> useful_sort;
   std::set<int> ind_active;
   long long best_ans = 0;
   long long cur_ans;
@@ -33,8 +35,8 @@ struct BackpackSolver {
   int cur_wei = 0;
   int cLp_iter = 5000;
   int cMany = 3;
+  int cRemPushIter = 100;
   bool is_accurate = false;
-  using Pair = std::pair<long double, int>;
 
   struct Ans {
     long long sum_cost;
@@ -523,6 +525,126 @@ struct BackpackSolver {
     SolveCheckAndAdd(model);
   }
 
+  bool SwapObj(int i1, int i2, bool sure = false) {
+    if (cur_taken[i1] && cur_taken[i2]) {
+      return false;
+    }
+    if (!(cur_taken[i1] || cur_taken[i2])) {
+      return false;
+    }
+    if (!cur_taken[i1]) {
+      std::swap(i1, i2);
+    }
+    if (cur_wei - wei[i1] + wei[i2] > max_wei) {
+      return false;
+    }
+    int profit = cost[i2] - cost[i1];
+    if (sure && (profit > 0)) {
+      cur_wei = cur_wei - wei[i1] + wei[i2];
+      cur_taken[i1] = false;
+      cur_taken[i2] = true;
+      return true;
+    }
+    return false;
+  }
+
+  void SetBestAsCur() {
+    cur_ans = best_ans;
+    cur_taken = best_taken;
+    cur_wei = 0;
+    for (int i = 0; i < num_of_obj; ++i) {
+      if (cur_taken[i]) {
+        cur_wei += wei[i];
+      }
+    }
+  }
+
+  void SetUsefulSort() {
+    useful_sort.reserve(num_of_obj);
+    for (int i = 0; i < num_of_obj; ++i) {
+      useful_sort.push_back(Pair(
+        static_cast<double>(cost[i]) / static_cast<double>(wei[i]), i));
+    }
+    std::sort(useful_sort.begin(), useful_sort.end(), Comp);
+  }
+
+  Ans PushByEur() {
+    long long value = num_of_obj;
+    std::vector<bool> cur_taken_copy = cur_taken;
+    long long cur_ans_copy = cur_ans;
+    int cur_wei_copy = cur_wei;
+    value *= (max_wei - cur_wei);
+    int i = 0;
+    while (value > cMaxMemory) {
+      if (i >= num_of_obj) {
+        break;
+      }
+      if (cur_taken[useful_sort[i].second]) {
+        ++i;
+        continue;
+      }
+      if (AddEl(useful_sort[i].second)) {
+        ++i;
+        value = num_of_obj;
+        value *= (max_wei - cur_wei);
+        continue;
+      }
+      ++i;
+    }
+    OneGcdEur(1);
+    Ans ans;
+    ans.sum_cost = 0;
+    for (int i = 0; i < num_of_obj; ++i) {
+      if (cur_taken[i] && (!cur_taken_copy[i])) {
+        ans.index.push_back(i);
+        ans.sum_cost += cost[i];
+      }
+    }
+    std::swap(cur_ans, cur_ans_copy);
+    std::swap(cur_taken, cur_taken_copy);
+    std::swap(cur_wei_copy, cur_wei);
+    return ans;
+  }
+
+  void ApplyAns(const Ans& ans) {
+    for (size_t i = 0; i < ans.index.size(); ++i) {
+      AddEl(ans.index[i]);
+    }
+  }
+
+  int RemoveAndPush() {
+    int iter = 0;
+    for (; iter < cRemPushIter; ++iter) {
+      bool changed = false;
+      for (int i = 0; i < num_of_obj; ++i) {
+        if (!cur_taken[i]) {
+          continue;
+        }
+        RemEl(i);
+        Ans ans = PushByEur();
+        if (ans.sum_cost > cost[i]) {
+          ApplyAns(ans);
+          SetBetter();
+          changed = true;
+          break;
+        } else {
+          AddEl(i);
+        }
+      }
+      if (!changed) {
+        break;
+      }
+    }
+    return iter;
+  }
+
+  void LocalSearch() {
+    SetUsefulSort();
+    SetBestAsCur();
+    RemoveAndPush();
+    SetBetter();
+  }
+
  public:
   BackpackSolver(std::string path, std::ostringstream& out) {
     InpData(path);
@@ -541,6 +663,7 @@ struct BackpackSolver {
     //FindAns();
     //SetBetter();
     LpSolve();
+    LocalSearch();
     out << best_ans << "\n";
     for (size_t i = 0; i < num_of_obj; ++i) {
       if (best_taken[i]) {
