@@ -9,21 +9,31 @@
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <random>
 #include "coin/ClpSimplex.hpp"
 
 struct BackpackSolver {
  private:
 
+  using Pair = std::pair<long double, int>;
   std::vector<int> cost;
   std::vector<int> wei;
   std::vector<int> wei_greedy;
   std::vector<int> ones_taken;
   std::vector<bool> cur_taken;
   std::vector<bool> best_taken;
+  std::vector<Pair> useful_sort;
+  std::vector<int> rev_useful_sort;
   std::set<int> ind_active;
+  std::vector<int> rem_tabu_list;
+  std::vector<int> add_tabu_list;
   long long best_ans = 0;
   long long cur_ans;
-  long long cMaxMemory = 1LL << 20;
+  long long cMaxMemory = 1LL << 27;
+  long long timer = 0;
+  long long tabu_limit;
+  double tabu_bad = 0.85;
+  double add_alpha = 0.5;
   double alpha = 0.25;
   const double cEps = 1E-5;
   double is_one_after = 0.9;
@@ -31,10 +41,13 @@ struct BackpackSolver {
   int max_wei;
   int greedy_max_wei;
   int cur_wei = 0;
-  int cLp_iter = 5000;
+  int cLp_iter = 500;
   int cMany = 3;
+  int cRemPushIter = 500;
+  int tabu_max_time = 1000;
+  int tabu_max_iter = 500;
+  int tabu_max_total = 500;
   bool is_accurate = false;
-  using Pair = std::pair<long double, int>;
 
   struct Ans {
     long long sum_cost;
@@ -167,6 +180,10 @@ struct BackpackSolver {
     return true;
   }
 
+  bool IsTabuBlocked(int index) const {
+    return timer <= static_cast<long long>(rem_tabu_list[index]) + tabu_max_time;
+  }
+
   bool CanAddJustOne(int i1, int i2) {
     if ((cur_taken[i1]) || (cur_taken[i2])) {
       return false;
@@ -205,6 +222,9 @@ struct BackpackSolver {
     ind_active.clear();
     for (int i = 0; i < num_of_obj; ++i) {
       if (cur_taken[i]) {
+        continue;
+      }
+      if (IsTabuBlocked(i)) {
         continue;
       }
       if (wei_greedy[i] > greedy_max_wei) {
@@ -523,10 +543,369 @@ struct BackpackSolver {
     SolveCheckAndAdd(model);
   }
 
+  bool SwapObj(int i1, int i2, bool sure = false) {
+    if (cur_taken[i1] && cur_taken[i2]) {
+      return false;
+    }
+    if (!(cur_taken[i1] || cur_taken[i2])) {
+      return false;
+    }
+    if (!cur_taken[i1]) {
+      std::swap(i1, i2);
+    }
+    if (cur_wei - wei[i1] + wei[i2] > max_wei) {
+      return false;
+    }
+    int profit = cost[i2] - cost[i1];
+    if (sure && (profit > 0)) {
+      cur_wei = cur_wei - wei[i1] + wei[i2];
+      cur_taken[i1] = false;
+      cur_taken[i2] = true;
+      return true;
+    }
+    return false;
+  }
+
+  void SetBestAsCur() {
+    cur_ans = best_ans;
+    cur_taken = best_taken;
+    cur_wei = 0;
+    for (int i = 0; i < num_of_obj; ++i) {
+      if (cur_taken[i]) {
+        cur_wei += wei[i];
+      }
+    }
+  }
+
+  void SetUsefulSort() {
+    useful_sort.reserve(num_of_obj);
+    for (int i = 0; i < num_of_obj; ++i) {
+      useful_sort.push_back(Pair(
+        static_cast<double>(cost[i]) / static_cast<double>(wei[i]), i));
+    }
+    std::sort(useful_sort.begin(), useful_sort.end(), Comp);
+  }
+
+  void SetReverseUseful() {
+    rev_useful_sort.assign(num_of_obj, -1);
+    for (int pos = 0; pos < num_of_obj; ++pos) {
+      int index = useful_sort[pos].second;
+      if ((index >= 0) && (index < num_of_obj)) {
+        rev_useful_sort[index] = pos;
+      } else {
+        throw std::runtime_error("Cringe sort");
+      }
+    }
+  }
+
+  Ans PushByEur(int div = 1) {
+    long long value = num_of_obj;
+    std::vector<bool> cur_taken_copy = cur_taken;
+    long long cur_ans_copy = cur_ans;
+    int cur_wei_copy = cur_wei;
+    value *= (max_wei - cur_wei);
+    int i = 0;
+    while (value > cMaxMemory) {
+      if (i >= (num_of_obj / div)) {
+        break;
+      }
+      if (cur_taken[useful_sort[i].second]) {
+        ++i;
+        continue;
+      }
+      if (IsTabuBlocked(useful_sort[i].second)) {
+        ++i;
+        continue;
+      }
+      if (AddEl(useful_sort[i].second)) {
+        ++i;
+        value = num_of_obj;
+        value *= (max_wei - cur_wei);
+        continue;
+      }
+      ++i;
+    }
+    OneGcdEur(1);
+    Ans ans;
+    ans.sum_cost = 0;
+    for (int i = 0; i < num_of_obj; ++i) {
+      if (cur_taken[i] && (!cur_taken_copy[i])) {
+        ans.index.push_back(i);
+        ans.sum_cost += cost[i];
+      }
+    }
+    std::swap(cur_ans, cur_ans_copy);
+    std::swap(cur_taken, cur_taken_copy);
+    std::swap(cur_wei_copy, cur_wei);
+    return ans;
+  }
+
+  void ApplyAns(const Ans& ans) {
+    for (size_t i = 0; i < ans.index.size(); ++i) {
+      AddEl(ans.index[i]);
+    }
+  }
+
+  int RemoveAndPush(int div = 1) {
+    int iter = 0;
+    for (; iter < cRemPushIter; ++iter) {
+      bool changed = false;
+      for (int i = 0; i < num_of_obj; ++i) {
+        if (!cur_taken[i]) {
+          continue;
+        }
+        RemEl(i);
+        Ans ans = PushByEur(div);
+        if (ans.sum_cost > cost[i]) {
+          ApplyAns(ans);
+          SetBetter();
+          changed = true;
+          break;
+        } else {
+          AddEl(i);
+        }
+      }
+      if (!changed) {
+        break;
+      }
+    }
+    return iter;
+  }
+
+  bool OneRemoveTabuOper(std::vector<int>& perm, int div = 1) {
+    bool changed_any = false;
+    for (int iter = 0; iter < tabu_max_iter; ++iter) {
+      bool changed = false;
+      for (size_t p = 0; p < perm.size(); ++p) {
+        int i = perm[p];
+        if (!cur_taken[i]) {
+          continue;
+        }
+        long long before = cur_ans;
+        RemEl(i);
+        bool not_often = rem_tabu_list[i] < (timer - tabu_max_time);
+        int old_tabu_time = rem_tabu_list[i];
+        long long old_timer = timer;
+        rem_tabu_list[i] = static_cast<int>(timer);
+        ++timer;
+        Ans ans = PushByEur(div);
+        long long candidate = before - cost[i] + ans.sum_cost;
+        if (ans.sum_cost > cost[i]) {
+          ApplyAns(ans);
+          changed = true;
+          changed_any = true;
+          SetBetter();
+          break;
+        }
+        if (ans.sum_cost < cost[i]) {
+          bool not_too_bad =
+              static_cast<double>(candidate) >= tabu_bad * static_cast<double>(best_ans);
+          if (not_too_bad && not_often) {
+            ApplyAns(ans);
+            changed = true;
+            changed_any = true;
+            SetBetter();
+            break;
+          }
+        }
+        AddEl(i);
+        rem_tabu_list[i] = old_tabu_time;
+        timer = old_timer;
+      }
+      if (!changed) {
+        //std::cout << "Iter is: " << iter << "\n";
+        //break;
+      }
+    }
+    return changed_any;
+  }
+
+  void GreedyOnCurWei(int left) {
+    if ((left < 0) || (left >= num_of_obj)) {
+      return;
+    }
+    std::vector<int> taken;
+    for (int i = 0; i < num_of_obj; ++i) {
+      if (!cur_taken[i]) {
+        continue;
+      }
+      if (i == left) {
+        continue;
+      }
+      taken.push_back(i);
+      RemEl(i);
+    }
+    cur_taken[left] = true;
+    cur_ans = cost[left];
+    cur_wei = wei[left];
+    std::vector<int> add_order;
+    add_order.reserve(taken.size());
+    for (size_t i = 0; i < taken.size(); ++i) {
+      int pos = rev_useful_sort[taken[i]];
+      if ((pos >= 0) && (pos < num_of_obj)) {
+        add_order.push_back(pos);
+      } else {
+        throw std::runtime_error("Incorrect pos!");
+      }
+    }
+    std::sort(add_order.begin(), add_order.end());
+    for (size_t i = 0; i < add_order.size(); ++i) {
+      AddEl(useful_sort[add_order[i]].second);
+    }
+  }
+
+  bool OneAddTabuOper(std::vector<int>& perm) {
+    bool changed_any = false;
+    for (int iter = 0; iter < tabu_max_iter; ++iter) {
+      bool changed = false;
+      for (size_t p = 0; p < perm.size(); ++p) {
+        int i = perm[p];
+        if ((i < 0) || (i >= num_of_obj)) {
+          continue;
+        }
+        if (cur_taken[i]) {
+          continue;
+        }
+        std::vector<bool> cur_taken_copy = cur_taken;
+        long long cur_ans_copy = cur_ans;
+        int cur_wei_copy = cur_wei;
+        if (!AddEl(i)) {
+          cur_taken[i] = true;
+          cur_ans += cost[i];
+          cur_wei += wei[i];
+          if (cur_wei > max_wei) {
+            GreedyOnCurWei(i);
+          }
+        }
+        bool accepted = false;
+        if (cur_ans > best_ans) {
+          accepted = true;
+          SetBetter();
+        } else {
+          bool not_too_bad =
+              static_cast<double>(cur_ans) >= tabu_bad * static_cast<double>(best_ans);
+          bool not_often = add_tabu_list[i] < (timer - tabu_max_time);
+          if (not_too_bad && not_often) {
+            accepted = true;
+          }
+        }
+        if (accepted) {
+          add_tabu_list[i] = static_cast<int>(timer);
+          ++timer;
+          changed = true;
+          changed_any = true;
+        } else {
+          std::swap(cur_taken, cur_taken_copy);
+          std::swap(cur_ans, cur_ans_copy);
+          std::swap(cur_wei, cur_wei_copy);
+        }
+      }
+      if (!changed) {
+        break;
+      }
+    }
+    return changed_any;
+  }
+
+  void TabuSearch(int div = 1) {
+    std::vector<int> perm(num_of_obj);
+    for (int i = 0; i < num_of_obj; ++i) {
+      perm[i] = i;
+    }
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<double> dist(0.0, 1.0);
+    tabu_limit = best_ans;
+    auto start = std::chrono::steady_clock::now();
+    for (int restart = 0; restart < tabu_max_total; ++restart) {
+      std::shuffle(perm.begin(), perm.end(), gen);
+      bool changed = false;
+      if (dist(gen) < add_alpha) {
+        changed = OneAddTabuOper(perm);
+        if (!changed) {
+          changed = OneRemoveTabuOper(perm, div);
+        }
+      } else {
+        changed = OneRemoveTabuOper(perm, div);
+        if (!changed) {
+          changed = OneAddTabuOper(perm);
+        }
+      }
+      if (!changed) {
+        break;
+      }
+      auto end = std::chrono::steady_clock::now();
+      auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
+      if (duration.count() > 10) {
+        break;
+      }
+    }
+  }
+
+  void SetRandomSolution() {
+    for (int i = 0; i < num_of_obj; ++i) {
+      cur_taken[i] = false;
+    }
+    cur_ans = 0;
+    cur_wei = 0;
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<double> dist(0.0, 1.0);
+    for (int i = 0; i < num_of_obj; ++i) {
+      if (dist(gen) > 0.75) {
+        AddEl(useful_sort[i].second);
+      }
+    }
+    SetBetter();
+  }
+
+  void SetTabuMaxIter() {
+    tabu_max_iter = 0;
+    for (int i = 0; i < num_of_obj; ++i) {
+      if (cur_taken[i]) {
+        ++tabu_max_iter;
+      }
+    }
+    tabu_max_iter *= 2;
+  }
+
+  void LocalSearch() {
+    SetUsefulSort();
+    SetReverseUseful();
+    auto start = std::chrono::steady_clock::now();
+    int times = 0;
+    while(true) {
+      for (add_alpha = 0.9; add_alpha > 0.05; add_alpha -= 0.3) {
+        for (tabu_bad = 0.9; tabu_bad > 0.05; tabu_bad -= 0.3) {
+          SetBestAsCur();
+          SetTabuMaxIter();
+          long long copy = best_ans;
+          RemoveAndPush(times + 1);
+          SetBetter();
+          SetBestAsCur();
+          TabuSearch(times + 1);
+          RemoveAndPush(times + 1);
+          SetBetter();
+        }
+      }
+      auto end = std::chrono::steady_clock::now();
+      auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
+      if (duration.count() > 20) {
+        break;
+      }
+      times = duration.count() / 30;
+    }
+  }
+
  public:
   BackpackSolver(std::string path, std::ostringstream& out) {
     InpData(path);
-    /*if (DpIsOk()) {
+    rem_tabu_list.resize(num_of_obj, -tabu_max_time - 10);
+    add_tabu_list.resize(num_of_obj, -tabu_max_time - 10);
+    cur_taken.resize(num_of_obj, false);
+    cur_ans = 0;
+    //Solution 1
+    if (DpIsOk()) {
       Ans ans = DpAlg();
       out << ans.sum_cost << "\n";
       for (int i = 0; i < ans.index.size(); ++i) {
@@ -534,13 +913,17 @@ struct BackpackSolver {
       }
       out << "\nFull DP\n";
       return;
-    }*/
-    cur_taken.resize(num_of_obj, false);
-    cur_ans = 0;
-    //GcdEur();
-    //FindAns();
-    //SetBetter();
+    }
+    GcdEur();
+    FindAns();
+    SetBetter();
+    //End of Sol 1
+
+    //Solution 2 and 3
     LpSolve();
+    LocalSearch();
+    //End of Sol 2 and 3
+    
     out << best_ans << "\n";
     for (size_t i = 0; i < num_of_obj; ++i) {
       if (best_taken[i]) {
@@ -548,8 +931,5 @@ struct BackpackSolver {
       }
     }
     out << "\n";
-    /*if (is_accurate) {
-      out << "Simplex is sure\n";
-    }*/
   }
 };
