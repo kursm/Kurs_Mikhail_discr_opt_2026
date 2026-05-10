@@ -88,18 +88,22 @@ struct ColoringSolver {
     
 
     std::vector<std::vector<int>> edges;
+    std::vector<std::vector<bool>> mat;
     std::vector<int> color;
     int v_num;
     int c_num;
 
     Graph () = default;
 
-    Graph (int v, std::vector<std::pair<int, int>> edg) {
+    Graph (int v, std::vector<std::pair<int, int>>& edg) {
       v_num = v;
       edges.resize(v_num, std::vector<int>());
+      mat.resize(v_num, std::vector<bool>(v_num, false));
       for (size_t i = 0; i < edg.size(); ++i) {
         edges[edg[i].first].push_back(edg[i].second);
         edges[edg[i].second].push_back(edg[i].first);
+        mat[edg[i].first][edg[i].second] = true;
+        mat[edg[i].second][edg[i].first] = true;
       }
       color.resize(v_num, -1);
     }
@@ -132,10 +136,14 @@ struct ColoringSolver {
   };
 
   int vert_num;
-  std::vector<std::pair<int, int>> inp_edges;
-  Graph gr;
   int best_known = 1E6;
+  int random_iters = 5000;
+  Graph gr;
   std::vector<int> best_col;
+  std::vector<int> best_distrib;
+  std::vector<int> cur_distrib;
+  std::vector<std::pair<int, int>> inp_edges;
+  using Pair = std::pair<int, int>;
 
   void InpData(std::string& path) {
     std::ifstream input_file(path);
@@ -155,7 +163,6 @@ struct ColoringSolver {
   }
 
  private:
-  using Pair = std::pair<int, int>;
 
   static bool Comp(Pair ft, Pair sc) {
     return (ft.first > sc.first) ||
@@ -313,7 +320,21 @@ struct ColoringSolver {
     return false;
   }
 
-  std::vector<int> best_distrib;
+  static bool LocalSearchComparator2(std::vector<int>& distrib,
+                                    std::vector<int>& distrib_other) {
+    if (distrib.size() != distrib_other.size()) {
+      return distrib.size() < distrib_other.size();
+    }
+    long double value1 = 0;
+    long double value2 = 0;
+    long double a = 2;
+    for (int i = 0; i < distrib.size(); ++i) {
+      long double pw = std::pow(static_cast<long double>(i), a);
+      value1 += distrib[i] * pw;
+      value2 += distrib_other[i] * pw;
+    }
+    return 1E-3 < value2 - value1;
+  }
 
   std::vector<int> FindDistrib(std::vector<int>& perm) {
     return gr.SetColor(perm);
@@ -336,7 +357,7 @@ struct ColoringSolver {
   struct CustomLess {
     bool operator()(LSHeapEl& ft, LSHeapEl& sc) {
       if (ft.distr != sc.distr) {
-        return LocalSearchComparator(ft.distr, sc.distr);
+        return LocalSearchComparator2(ft.distr, sc.distr);
       }
       return ft.reveal < sc.reveal;
     }
@@ -344,20 +365,23 @@ struct ColoringSolver {
 
  public:
 
-  std::vector<int> LocalSearch() {
-    const int cMaxIter = 100;
-    const int cMaxDepth = 5;
-    const int cBeamConst = 15;
+  std::vector<int> BeamSearch() {
+    int cMaxDepth = 500;
+    int cBeamConst = 150;
+    int cBeamSmallTime = 2500;
+    int cBeamSearchTime = 30;
     auto start = std::chrono::steady_clock::now();
     std::vector<int> perm = PermLastPush();
     if (best_distrib.empty()) {
       best_distrib = FindDistrib(perm);
     }
     std::unordered_set<long long> opened;
-    for (int iter = 0; iter < cMaxIter; ++iter) {
+    int iter = 0;
+    while (true) {
+      ++iter;
       auto end = std::chrono::steady_clock::now();
       auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
-      if (duration.count() > 59) {
+      if (duration.count() > cBeamSearchTime) {
         break;
       }
       gr.SetColor(perm);
@@ -371,7 +395,13 @@ struct ColoringSolver {
         que.push(LSHeapEl(distrib, perm, i));
       }
       bool changed = false;
+      auto start2 = std::chrono::steady_clock::now();
       for (int i = 0; i < cMaxDepth; ++i) {
+        auto end2 = std::chrono::steady_clock::now();
+        auto duration2 = std::chrono::duration_cast<std::chrono::milliseconds>(end2 - start2);
+        if (duration2.count() > cBeamSmallTime) {
+          break;
+        }
         std::vector<LSHeapEl> for_rev;
         for (int j = 0; j < cBeamConst; ++j) {
           if (que.empty()) {
@@ -393,13 +423,13 @@ struct ColoringSolver {
             std::swap(n_perm[for_rev[j].reveal],
                       n_perm[r_perm[gr.edges[for_rev[j].perm[for_rev[j].reveal]][k]]]);
             long long hash = vhs.Hash(n_perm);
-            if (opened.count(hash) == 1) {
+            /*if (opened.count(hash) == 1) {
               continue;
             } else {
               opened.insert(hash);
-            }
+            }*/
             std::vector<int> n_dist = FindDistrib(n_perm);
-            if (LocalSearchComparator(n_dist, best_distrib)) {
+            if (LocalSearchComparator2(n_dist, best_distrib)) {
               best_distrib = n_dist;
               changed = true;
               PermLastPush(n_perm);
@@ -423,13 +453,424 @@ struct ColoringSolver {
         break;
       }
     }
+    //std::cout << iter;
     return perm;
+  }
+
+  std::vector<int> SetColorFast(std::vector<int>& perm) {
+    std::vector<int> class_sizes;
+    int cur_color = 1;
+    int color_start = 0;
+    class_sizes.push_back(0);
+    for (int i = 0; i < perm.size(); ++i) {
+      int v = perm[i];
+      bool can_use_cur = true;
+      for (int j = color_start; j < i; ++j) {
+        if (gr.mat[v][perm[j]]) {
+          can_use_cur = false;
+          break;
+        }
+      }
+      if (!can_use_cur) {
+        ++cur_color;
+        color_start = i;
+        class_sizes.push_back(0);
+      }
+      gr.color[v] = cur_color;
+      ++class_sizes[cur_color - 1];
+    }
+    gr.c_num = cur_color;
+    return class_sizes;
+  }
+
+  static bool MaxFirstComp(Pair ft, Pair sc) {
+    return (ft.first > sc.first) ||
+           ((ft.first == sc.first) && (ft.second < sc.second));
+  }
+
+  bool MaxFirst(std::vector<int>& perm) {
+    std::vector<int> cur_dist = SetColorFast(perm);
+    std::vector<Pair> cls;
+    cls.reserve(cur_dist.size());
+    int pos = 0;
+    for (int i = 0; i < cur_dist.size(); ++i) {
+      cls.push_back(Pair(cur_dist[i], pos));
+      pos += cur_dist[i];
+    }
+    std::sort(cls.begin(), cls.end(), MaxFirstComp);
+    std::vector<int> n_perm;
+    n_perm.reserve(perm.size());
+    for (int i = 0; i < cls.size(); ++i) {
+      for (int j = 0; j < cls[i].first; ++j) {
+        n_perm.push_back(perm[cls[i].second + j]);
+      }
+    }
+    std::vector<int> n_dist = SetColorFast(n_perm);
+    if (LocalSearchComparator2(n_dist, cur_dist)) {
+      std::swap(perm, n_perm);
+      return true;
+    }
+    SetColorFast(perm);
+    return false;
+  }
+
+  static bool MinFirstComp(Pair ft, Pair sc) {
+    return (ft.first < sc.first) ||
+           ((ft.first == sc.first) && (ft.second < sc.second));
+  }
+
+  bool MinFirst(std::vector<int>& perm) {
+    std::vector<int> cur_dist = SetColorFast(perm);
+    std::vector<Pair> cls;
+    cls.reserve(cur_dist.size());
+    int pos = 0;
+    for (int i = 0; i < cur_dist.size(); ++i) {
+      cls.push_back(Pair(cur_dist[i], pos));
+      pos += cur_dist[i];
+    }
+    std::sort(cls.begin(), cls.end(), MinFirstComp);
+    std::vector<int> n_perm;
+    n_perm.reserve(perm.size());
+    for (int i = 0; i < cls.size(); ++i) {
+      for (int j = 0; j < cls[i].first; ++j) {
+        n_perm.push_back(perm[cls[i].second + j]);
+      }
+    }
+    std::vector<int> n_dist = SetColorFast(n_perm);
+    if (LocalSearchComparator2(n_dist, cur_dist)) {
+      std::swap(perm, n_perm);
+      return true;
+    }
+    SetColorFast(perm);
+    return false;
+  }
+
+  bool SlowMaxMinFirst(std::vector<int>& perm, bool is_max = true) {
+    std::vector<int> cur_dist = gr.SetColor(perm);
+    std::vector<Pair> cls;
+    cls.reserve(cur_dist.size());
+    int pos = 0;
+    for (int i = 0; i < cur_dist.size(); ++i) {
+      cls.push_back(Pair(cur_dist[i], pos));
+      pos += cur_dist[i];
+    }
+    if (is_max) {
+      std::sort(cls.begin(), cls.end(), MaxFirstComp);
+    } else {
+      std::sort(cls.begin(), cls.end(), MinFirstComp);
+    }
+    std::vector<int> n_perm;
+    n_perm.reserve(perm.size());
+    for (int i = 0; i < cls.size(); ++i) {
+      for (int j = 0; j < cls[i].first; ++j) {
+        n_perm.push_back(perm[cls[i].second + j]);
+      }
+    }
+    std::vector<int> n_dist = gr.SetColor(n_perm);
+    if (LocalSearchComparator2(n_dist, cur_dist)) {
+      std::vector<std::vector<int>> color_ord(n_dist.size());
+      for (int i = 0; i < n_perm.size(); ++i) {
+        int v = n_perm[i];
+        color_ord[gr.color[v] - 1].push_back(v);
+      }
+      std::vector<int> color_perm;
+      color_perm.reserve(perm.size());
+      for (int i = 0; i < color_ord.size(); ++i) {
+        for (int j = 0; j < color_ord[i].size(); ++j) {
+          color_perm.push_back(color_ord[i][j]);
+        }
+      }
+      std::swap(perm, color_perm);
+      return true;
+    }
+    gr.SetColor(perm);
+    return false;
+  }
+
+  bool MinMaxApproach(std::vector<int>& perm) {
+    bool changed_any = false;
+    while (true) {
+      /*if (MaxFirst(perm)) {
+        SetBetter();
+        changed_any = true;
+        continue;
+      }
+      if (MinFirst(perm)) {
+        SetBetter();
+        changed_any = true;
+        continue;
+      }*/
+      if (SlowMaxMinFirst(perm, true)) {
+        SetBetter();
+        changed_any = true;
+        continue;
+      }
+      if (SlowMaxMinFirst(perm, false)) {
+        SetBetter();
+        changed_any = true;
+        continue;
+      }
+      break;
+    }
+    return changed_any;
+  }
+
+  bool RandomPerm(std::vector<int>& perm) {
+    std::vector<int> cur_dist = gr.SetColor(perm);
+    std::vector<std::vector<int>> color_ord(cur_dist.size());
+    for (int i = 0; i < perm.size(); ++i) {
+      int v = perm[i];
+      color_ord[gr.color[v] - 1].push_back(v);
+    }
+    std::vector<int> color_ids;
+    color_ids.reserve(color_ord.size());
+    for (int i = 0; i < color_ord.size(); ++i) {
+      color_ids.push_back(i);
+    }
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    for (int it = 0; it < random_iters; ++it) {
+      std::shuffle(color_ids.begin(), color_ids.end(), gen);
+      std::vector<int> n_perm;
+      n_perm.reserve(perm.size());
+      for (int i = 0; i < color_ids.size(); ++i) {
+        int cid = color_ids[i];
+        for (int j = 0; j < color_ord[cid].size(); ++j) {
+          n_perm.push_back(color_ord[cid][j]);
+        }
+      }
+      std::vector<int> n_dist = gr.SetColor(n_perm);
+      if (LocalSearchComparator2(n_dist, cur_dist)) {
+        std::vector<std::vector<int>> n_color_ord(n_dist.size());
+        for (int i = 0; i < n_perm.size(); ++i) {
+          int v = n_perm[i];
+          n_color_ord[gr.color[v] - 1].push_back(v);
+        }
+        std::vector<int> color_perm;
+        color_perm.reserve(perm.size());
+        for (int i = 0; i < n_color_ord.size(); ++i) {
+          for (int j = 0; j < n_color_ord[i].size(); ++j) {
+            color_perm.push_back(n_color_ord[i][j]);
+          }
+        }
+        std::swap(perm, color_perm);
+        return true;
+      }
+    }
+    gr.SetColor(perm);
+    return false;
+  }
+
+  int ColorTwoClasses(std::vector<int>& perm, int beg1, int beg2, int size1,
+                       int size2) {
+    std::vector<int> class2;
+    class2.reserve(size2);
+    for (int i = 0; i < size2; ++i) {
+      class2.push_back(perm[beg2 + i]);
+    }
+    std::vector<int> moved;
+    std::vector<int> stay1;
+    moved.reserve(size1);
+    stay1.reserve(size1);
+    for (int i = 0; i < size1; ++i) {
+      int v = perm[beg1 + i];
+      bool can_move = true;
+      for (int j = 0; j < class2.size(); ++j) {
+        if (gr.mat[v][class2[j]]) {
+          can_move = false;
+          break;
+        }
+      }
+      if (can_move) {
+        moved.push_back(v);
+      } else {
+        stay1.push_back(v);
+      }
+    }
+    int moved_cnt = moved.size();
+    int old_pop = std::max(size1, size2);
+    int new_size1 = size1 - moved_cnt;
+    int new_size2 = size2 + moved_cnt;
+    int new_pop = std::max(new_size1, new_size2);
+    if ((moved_cnt == 0) || (new_pop <= old_pop)) {
+      return 0;
+    }
+    int color1 = gr.color[perm[beg1]];
+    int color2 = gr.color[perm[beg2]];
+    int pos = beg1;
+    for (int i = 0; i < class2.size(); ++i) {
+      perm[pos++] = class2[i];
+    }
+    for (int i = 0; i < moved.size(); ++i) {
+      perm[pos++] = moved[i];
+      gr.color[moved[i]] = color2;
+    }
+    for (int i = 0; i < stay1.size(); ++i) {
+      perm[pos++] = stay1[i];
+      gr.color[stay1[i]] = color1;
+    }
+    return moved_cnt;
+  }
+
+  bool SwapTwoClasses(std::vector<int>& perm) {
+    bool changed_any = false;
+    SlowMaxMinFirst(perm, true);
+    std::vector<int> dist = gr.SetColor(perm);
+    std::vector<std::vector<int>> color_ord(dist.size());
+    for (int i = 0; i < perm.size(); ++i) {
+      int v = perm[i];
+      color_ord[gr.color[v] - 1].push_back(v);
+    }
+    std::vector<int> color_perm;
+    color_perm.reserve(perm.size());
+    for (int i = 0; i < color_ord.size(); ++i) {
+      for (int j = 0; j < color_ord[i].size(); ++j) {
+        color_perm.push_back(color_ord[i][j]);
+      }
+    }
+    std::swap(perm, color_perm);
+    gr.SetColor(perm);
+    std::vector<int> starts;
+    starts.reserve(gr.c_num + 1);
+    starts.push_back(0);
+    for (int i = 1; i < perm.size(); ++i) {
+      if (gr.color[perm[i]] != gr.color[perm[i - 1]]) {
+        starts.push_back(i);
+      }
+    }
+    starts.push_back(perm.size());
+    while (true) {
+      bool changed_pass = false;
+      for (int i = 0; i + 2 < starts.size(); ++i) {
+        int beg1 = starts[i];
+        int beg2 = starts[i + 1];
+        int size1 = starts[i + 1] - starts[i];
+        int size2 = starts[i + 2] - starts[i + 1];
+        if ((size1 == 0) || (size2 == 0)) {
+          continue;
+        }
+        int moved = ColorTwoClasses(perm, beg1, beg2, size1, size2);
+        if (moved > 0) {
+          changed_pass = true;
+          changed_any = true;
+          starts[i + 1] = beg1 + size2 + moved;
+        }
+      }
+      if (!changed_pass) {
+        break;
+      }
+    }
+    if (changed_any) {
+      gr.SetColor(perm);
+      return true;
+    }
+    return false;
+  }
+
+  bool MakeColorTheLast(std::vector<int>& perm) {
+    bool changed_any = false;
+    SlowMaxMinFirst(perm, true);
+    std::vector<int> cur_dist = gr.SetColor(perm);
+    auto start = std::chrono::steady_clock::now();
+    while (true) {
+      bool changed_here = false;
+      int colors = cur_dist.size();
+      std::vector<int> base_color = gr.color;
+      for (int col = 1; col <= colors; ++col) {
+        std::vector<int> n_perm;
+        n_perm.reserve(perm.size());
+        for (int i = 0; i < perm.size(); ++i) {
+          if (base_color[perm[i]] != col) {
+            n_perm.push_back(perm[i]);
+          }
+        }
+        for (int i = 0; i < perm.size(); ++i) {
+          if (base_color[perm[i]] == col) {
+            n_perm.push_back(perm[i]);
+          }
+        }
+        SlowMaxMinFirst(n_perm, true);
+        std::vector<int> n_dist = gr.SetColor(n_perm);
+        if (LocalSearchComparator2(n_dist, cur_dist)) {
+          std::swap(perm, n_perm);
+          std::swap(cur_dist, n_dist);
+          changed_any = true;
+          changed_here = true;
+          break;
+        }
+      }
+      if (!changed_here) {
+        break;
+      }
+      auto end = std::chrono::steady_clock::now();
+      auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
+      if (duration.count() > 5) {
+        break;
+      }
+    }
+    gr.SetColor(perm);
+    return changed_any;
+  }
+
+  void LocalSearch() {
+    std::vector<int> perm = PermLastPush();
+    SetColorFast(perm);
+    SetBetter();
+    //MinMaxApproach(perm);
+    while (true) {
+      bool changed_staticaly = false;
+      if (MinMaxApproach(perm)) {
+        SetBetter();
+        changed_staticaly = true;
+      }
+      if (SwapTwoClasses(perm)) {
+        SetBetter();
+        changed_staticaly = true;
+      }
+      /*if (MakeColorTheLast(perm)) {
+        SetBetter();
+        changed_staticaly = true;
+      }*/
+      if (changed_staticaly) {
+        continue;
+      }
+      if (RandomPerm(perm)) {
+        SetBetter();
+        continue;
+      }
+      break;
+    }
+    /*while(true) {
+      if (MakeColorTheLast(perm)) {
+        SetBetter();
+        continue;
+      }
+      if (SwapTwoClasses(perm)) {
+        SetBetter();
+        continue;
+      }
+      break;
+    }*/
+  }
+
+  void MetricAnnealing() {
+    
   }
 
   ColoringSolver (std::string path, std::ostringstream& out) {
     InpData(path);
     gr = Graph(vert_num, inp_edges);
-    LocalSearch();
+    
+    //BeamSearch();
+
+    int times = 20;
+    if (vert_num > 500) {
+      times = 2;
+    }
+    for (int i = 0; i < times; ++i) {
+      LocalSearch();
+    }
+
     out << best_known << "\n";
     for (int i = 0; i < vert_num; ++i) {
       out << best_col[i] << " ";
