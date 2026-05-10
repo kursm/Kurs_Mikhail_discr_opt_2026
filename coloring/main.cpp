@@ -138,6 +138,11 @@ struct ColoringSolver {
   int vert_num;
   int best_known = 1E6;
   int random_iters = 5000;
+  static inline long double a = 2;
+  long double temp;
+  long double temp_change = 0.9999;
+  long double temp_delta = 0.995;
+  long double temp_stop = 1E-8;
   Graph gr;
   std::vector<int> best_col;
   std::vector<int> best_distrib;
@@ -327,7 +332,6 @@ struct ColoringSolver {
     }
     long double value1 = 0;
     long double value2 = 0;
-    long double a = 2;
     for (int i = 0; i < distrib.size(); ++i) {
       long double pw = std::pow(static_cast<long double>(i), a);
       value1 += distrib[i] * pw;
@@ -357,7 +361,7 @@ struct ColoringSolver {
   struct CustomLess {
     bool operator()(LSHeapEl& ft, LSHeapEl& sc) {
       if (ft.distr != sc.distr) {
-        return LocalSearchComparator2(ft.distr, sc.distr);
+        return LocalSearchComparator(ft.distr, sc.distr);
       }
       return ft.reveal < sc.reveal;
     }
@@ -429,7 +433,7 @@ struct ColoringSolver {
               opened.insert(hash);
             }*/
             std::vector<int> n_dist = FindDistrib(n_perm);
-            if (LocalSearchComparator2(n_dist, best_distrib)) {
+            if (LocalSearchComparator(n_dist, best_distrib)) {
               best_distrib = n_dist;
               changed = true;
               PermLastPush(n_perm);
@@ -506,7 +510,7 @@ struct ColoringSolver {
       }
     }
     std::vector<int> n_dist = SetColorFast(n_perm);
-    if (LocalSearchComparator2(n_dist, cur_dist)) {
+    if (LocalSearchComparator(n_dist, cur_dist)) {
       std::swap(perm, n_perm);
       return true;
     }
@@ -537,7 +541,7 @@ struct ColoringSolver {
       }
     }
     std::vector<int> n_dist = SetColorFast(n_perm);
-    if (LocalSearchComparator2(n_dist, cur_dist)) {
+    if (LocalSearchComparator(n_dist, cur_dist)) {
       std::swap(perm, n_perm);
       return true;
     }
@@ -567,7 +571,7 @@ struct ColoringSolver {
       }
     }
     std::vector<int> n_dist = gr.SetColor(n_perm);
-    if (LocalSearchComparator2(n_dist, cur_dist)) {
+    if (LocalSearchComparator(n_dist, cur_dist)) {
       std::vector<std::vector<int>> color_ord(n_dist.size());
       for (int i = 0; i < n_perm.size(); ++i) {
         int v = n_perm[i];
@@ -589,29 +593,29 @@ struct ColoringSolver {
 
   bool MinMaxApproach(std::vector<int>& perm) {
     bool changed_any = false;
-    while (true) {
-      /*if (MaxFirst(perm)) {
+    //while (true) {
+      if (MaxFirst(perm)) {
         SetBetter();
         changed_any = true;
-        continue;
+        //continue;
       }
       if (MinFirst(perm)) {
         SetBetter();
         changed_any = true;
-        continue;
-      }*/
+        //continue;
+      }
       if (SlowMaxMinFirst(perm, true)) {
         SetBetter();
         changed_any = true;
-        continue;
+        //continue;
       }
       if (SlowMaxMinFirst(perm, false)) {
         SetBetter();
         changed_any = true;
-        continue;
+        //continue;
       }
-      break;
-    }
+      //break;
+    //}
     return changed_any;
   }
 
@@ -640,7 +644,7 @@ struct ColoringSolver {
         }
       }
       std::vector<int> n_dist = gr.SetColor(n_perm);
-      if (LocalSearchComparator2(n_dist, cur_dist)) {
+      if (LocalSearchComparator(n_dist, cur_dist)) {
         std::vector<std::vector<int>> n_color_ord(n_dist.size());
         for (int i = 0; i < n_perm.size(); ++i) {
           int v = n_perm[i];
@@ -791,7 +795,7 @@ struct ColoringSolver {
         }
         SlowMaxMinFirst(n_perm, true);
         std::vector<int> n_dist = gr.SetColor(n_perm);
-        if (LocalSearchComparator2(n_dist, cur_dist)) {
+        if (LocalSearchComparator(n_dist, cur_dist)) {
           std::swap(perm, n_perm);
           std::swap(cur_dist, n_dist);
           changed_any = true;
@@ -853,8 +857,359 @@ struct ColoringSolver {
     }*/
   }
 
+  void SetTemperature() {
+    //long double temp = 1000;
+    temp_change = 0.9999;
+    temp_stop = 1E-5;
+  }
+
   void MetricAnnealing() {
-    
+    SetTemperature();
+    temp = 1000;
+    if (best_col.size() != vert_num) {
+      return;
+    }
+    gr.color = best_col;
+    int max_col = 0;
+    for (int i = 0; i < vert_num; ++i) {
+      if (gr.color[i] > max_col) {
+        max_col = gr.color[i];
+      }
+    }
+    gr.c_num = max_col;
+    std::vector<int> distrib(max_col, 0);
+    for (int i = 0; i < vert_num; ++i) {
+      ++distrib[gr.color[i] - 1];
+    }
+    gr.c_num = max_col;
+    long double metric = 0;
+    for (int i = 0; i < distrib.size(); ++i) {
+      metric += distrib[i] * std::pow(static_cast<long double>(i), a);
+    }
+    //std::cout << "Metric is: " << metric / vert_num << "\n";
+    temp = static_cast<long double>(1000) * metric *
+           std::pow(static_cast<long double>(vert_num), 0.66);
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<int> vert_dist(0, vert_num - 1);
+    std::uniform_real_distribution<long double> prob_dist(0.0, 1.0);
+    int iter = 0;
+    std::queue<long double> delta_queue;
+    long double delta_sum = 0;
+    while (temp > temp_stop) {
+      int v = vert_dist(gen);
+      int old_col = gr.color[v];
+      std::set<int> free_colors;
+      for (int col = 1; col <= max_col; ++col) {
+        free_colors.insert(col);
+      }
+      for (int i = 0; i < gr.edges[v].size(); ++i) {
+        free_colors.erase(gr.color[gr.edges[v][i]]);
+      }
+      std::vector<int> lower;
+      std::vector<int> higher;
+      for (std::set<int>::iterator it = free_colors.begin();
+           it != free_colors.end(); ++it) {
+        if (*it < old_col) {
+          lower.push_back(*it);
+        } else if (*it > old_col) {
+          higher.push_back(*it);
+        }
+      }
+      if (lower.empty() && higher.empty()) {
+        temp *= temp_change;
+        continue;
+      }
+      ++iter;
+      int new_col = old_col;
+      if (!lower.empty()) {
+        std::uniform_int_distribution<int> pick(0, int(lower.size()) - 1);
+        new_col = lower[pick(gen)];
+      } else {
+        std::uniform_int_distribution<int> pick(0, int(higher.size()) - 1);
+        new_col = higher[pick(gen)];
+      }
+      int old_i = old_col - 1;
+      int new_i = new_col - 1;
+      long double delta = std::pow(static_cast<long double>(new_i), a) -
+                          std::pow(static_cast<long double>(old_i), a);
+      delta_queue.push(delta);
+      delta_sum += delta;
+      if (delta_queue.size() > 20) {
+        delta_sum -= delta_queue.front();
+        delta_queue.pop();
+      }
+      bool accept = false;
+      /*if (iter % 10000 == 20) {
+        long double delta_avg = delta_sum / delta_queue.size();
+        std::cout << "Temp par: " << iter << " " << temp << " " << delta_avg << " "
+                  << -delta_avg / temp << " " << std::exp(-delta_avg / temp) << "\n";
+      }*/
+      if (delta <= 0) {
+        accept = true;
+      } else {
+        long double prob = std::exp(-delta / temp);
+        accept = prob_dist(gen) < prob;
+      }
+      if (accept) {
+        gr.color[v] = new_col;
+        --distrib[old_i];
+        ++distrib[new_i];
+        metric += delta;
+        if (distrib[old_i] == 0) {
+          for (int u = 0; u < vert_num; ++u) {
+            if (gr.color[u] > old_col) {
+              --gr.color[u];
+            }
+          }
+          distrib.erase(distrib.begin() + old_i);
+          --max_col;
+          metric = 0;
+          for (int i = 0; i < distrib.size(); ++i) {
+            metric += distrib[i] * std::pow(static_cast<long double>(i), a);
+          }
+          gr.c_num = max_col;
+          SetBetter();
+        }
+      }
+      temp *= temp_change;
+    }
+    //std::cout << "Iters done" << iter << '\n';
+  }
+
+  void LocalAndAnnealing() {
+    auto start = std::chrono::steady_clock::now();
+    std::vector<int> perm = PermLastPush();
+    SetColorFast(perm);
+    SetBetter();
+    while (true) {
+      bool changed_staticaly = false;
+      if (MinMaxApproach(perm)) {
+        SetBetter();
+        changed_staticaly = true;
+      }
+      if (SwapTwoClasses(perm)) {
+        SetBetter();
+        changed_staticaly = true;
+      }
+      if (changed_staticaly) {
+        continue;
+      }
+      if (RandomPerm(perm)) {
+        SetBetter();
+        continue;
+      }
+      break;
+    }
+    auto end = std::chrono::steady_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
+    //std::cout << "First gone: " << duration.count() << "\n";
+    int max_iter = 20; // 20
+    for (int iters = 0; iters < max_iter; ++iters) {
+      MetricAnnealing();
+      int max_col = 0;
+      for (int i = 0; i < vert_num; ++i) {
+        if (gr.color[i] > max_col) {
+          max_col = gr.color[i];
+        }
+      }
+      std::vector<std::vector<int>> by_color(max_col + 1);
+      for (int i = 0; i < vert_num; ++i) {
+        by_color[gr.color[i]].push_back(i);
+      }
+      perm.clear();
+      perm.reserve(vert_num);
+      for (int col = 1; col <= max_col; ++col) {
+        for (int j = 0; j < by_color[col].size(); ++j) {
+          perm.push_back(by_color[col][j]);
+        }
+      }
+      gr.SetColor(perm);
+      SetBetter();
+    }
+    end = std::chrono::steady_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
+    //std::cout << "Second gone: " << duration.count() << "\n";
+    while (true) {
+      bool changed_staticaly = false;
+      if (MinMaxApproach(perm)) {
+        SetBetter();
+        changed_staticaly = true;
+      }
+      if (SwapTwoClasses(perm)) {
+        SetBetter();
+        changed_staticaly = true;
+      }
+      if (changed_staticaly) {
+        continue;
+      }
+      if (RandomPerm(perm)) {
+        SetBetter();
+        continue;
+      }
+      break;
+    }
+    end = std::chrono::steady_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
+    //std::cout << "Third gone: " << duration.count() << "\n";
+  }
+
+  void SetTemperature2() {
+    temp = 1500;
+    temp_change = 0.9999;
+    temp_stop = 4E-4;
+  }
+
+  void LastRepushed(bool& removed_color, int max_col, long long conflicts) {
+    if (removed_color) {
+      return;
+    }
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      for (int v = 0; v < vert_num; ++v) {
+        int old_col = gr.color[v];
+        std::vector<int> cnt(max_col + 1, 0);
+        for (int j = 0; j < gr.edges[v].size(); ++j) {
+          ++cnt[gr.color[gr.edges[v][j]]];
+        }
+        int best_col = old_col;
+        int best_conf = cnt[old_col];
+        for (int c = 1; c < max_col; ++c) {
+          if (cnt[c] < best_conf) {
+            best_conf = cnt[c];
+            best_col = c;
+          }
+        }
+        if (best_col != old_col) {
+          conflicts += (best_conf - cnt[old_col]);
+          gr.color[v] = best_col;
+          changed = true;
+        }
+      }
+      if (conflicts == 0) {
+        gr.c_num = max_col - 1;
+        SetBetter();
+        removed_color = true;
+        return;
+      }
+    }
+  }
+
+  void IncorrecntessAnnealing() {
+    while (true) {
+      long long iter = 0;
+      SetTemperature2();
+      gr.color = best_col;
+      int max_col = 0;
+      for (int i = 0; i < vert_num; ++i) {
+        if (gr.color[i] > max_col) {
+          max_col = gr.color[i];
+        }
+      }
+      std::vector<int> last_col_v;
+      for (int i = 0; i < vert_num; ++i) {
+        if (gr.color[i] == max_col) {
+          last_col_v.push_back(i);
+        }
+      }
+      long long conflicts = 0;
+      for (int i = 0; i < last_col_v.size(); ++i) {
+        int v = last_col_v[i];
+        std::vector<int> cnt(max_col + 1, 0);
+        for (int j = 0; j < gr.edges[v].size(); ++j) {
+          ++cnt[gr.color[gr.edges[v][j]]];
+        }
+        int best_to = 1;
+        int best_cnt = cnt[1];
+        for (int c = 2; c < max_col; ++c) {
+          if (cnt[c] < best_cnt) {
+            best_cnt = cnt[c];
+            best_to = c;
+          }
+        }
+        conflicts += best_cnt;
+        gr.color[v] = best_to;
+      }
+      if (conflicts == 0) {
+        gr.c_num = max_col - 1;
+        SetBetter();
+        continue;
+      }
+      std::random_device rd;
+      std::mt19937 gen(rd());
+      std::uniform_int_distribution<int> vert_dist(0, vert_num - 1);
+      std::uniform_real_distribution<long double> p01(0.0, 1.0);
+      std::queue<long double> delta_queue;
+      long double delta_sum = 0;
+      bool removed_color = false;
+      while (temp > temp_stop) {
+        ++iter;
+        int v = vert_dist(gen);
+        int old_col = gr.color[v];
+        std::vector<int> cnt(max_col + 1, 0);
+        for (int j = 0; j < gr.edges[v].size(); ++j) {
+          ++cnt[gr.color[gr.edges[v][j]]];
+        }
+        std::vector<int> free_colors;
+        for (int c = 1; c < max_col; ++c) {
+          if (cnt[c] == 0) {
+            free_colors.push_back(c);
+          }
+        }
+        if (!free_colors.empty()) {
+          std::uniform_int_distribution<int> pick(0, int(free_colors.size()) - 1);
+          int new_col = free_colors[pick(gen)];
+          if (new_col != old_col) {
+            conflicts -= cnt[old_col];
+            gr.color[v] = new_col;
+          }
+        } else {
+          std::uniform_int_distribution<int> pick(1, max_col - 1);
+          int new_col = pick(gen);
+          if (new_col != old_col) {
+            long long delta = cnt[new_col] - cnt[old_col];
+            delta_queue.push(delta);
+            delta_sum += delta;
+            if (delta_queue.size() > 20) {
+              delta_sum -= delta_queue.front();
+              delta_queue.pop();
+            }
+            bool accept = false;
+            if (delta <= 0) {
+              accept = true;
+            } else {
+              long double prob = std::exp(-static_cast<long double>(delta) / temp);
+              accept = p01(gen) < prob;
+            }
+            if (accept) {
+              gr.color[v] = new_col;
+              conflicts += delta;
+            }
+          }
+        }
+        /*if (iter % 10000 == 20) {
+          long double delta_avg = delta_sum / delta_queue.size();
+          std::cout << "Temp par: " << iter << " " << temp << " " << delta_avg << " "
+                    << -delta_avg / temp << " " << std::exp(-delta_avg / temp) << "\n";
+        }*/
+        if (conflicts == 0) {
+          gr.c_num = max_col - 1;
+          SetBetter();
+          removed_color = true;
+          break;
+        }
+        if (iter % 50 == 0) {
+          temp *= temp_change;
+        }
+      }
+      LastRepushed(removed_color, max_col, conflicts);
+      //std::cout << "Iter is: " << iter << "\n";
+      if (!removed_color) {
+        break;
+      }
+      //std::cout << "Done\n";
+    }
   }
 
   ColoringSolver (std::string path, std::ostringstream& out) {
@@ -863,13 +1218,30 @@ struct ColoringSolver {
     
     //BeamSearch();
 
-    int times = 20;
+    /*int times = 20; //20
     if (vert_num > 500) {
       times = 2;
     }
     for (int i = 0; i < times; ++i) {
       LocalSearch();
+    }*/
+
+    int times = 4;
+    if (vert_num > 500) {
+      times = 1;
     }
+    for (int i = 0; i < times; ++i) {
+      LocalAndAnnealing();
+    }
+
+    auto start = std::chrono::steady_clock::now();
+    int incor_times = 20;
+    for (int i = 0; i < incor_times; ++i) {
+      IncorrecntessAnnealing();
+    }
+    auto end = std::chrono::steady_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    //std::cout << "Time: " << double(duration.count())  << " milliseconds" << "\n";
 
     out << best_known << "\n";
     for (int i = 0; i < vert_num; ++i) {
