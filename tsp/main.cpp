@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <iostream>
 #include <fstream>
+#include <map>
 #include <queue>
 #include <random>
 #include <set>
@@ -12,7 +13,19 @@
 #include <stack>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
+
+namespace std {
+  template <>
+  struct hash<std::pair<int, int>> {
+    size_t operator()(const std::pair<int, int>& p) const {
+      size_t h1 = hash<int>{}(p.first);
+      size_t h2 = hash<int>{}(p.second);
+      return h1 ^ (h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
+    }
+  };
+}
 
 struct TSPSolver{
  private:
@@ -29,16 +42,20 @@ struct TSPSolver{
   int num_of_points;
   int FastLinKerniganIter = 250;
   int LinKerniganMaxSearch = 10;
-  int LinKerniganMaxNeib = 2000;
+  int LinKerniganMaxNeib = 8000;
   int crossovers_num = 10;
   int population_size = 20;
   int time_to_change = 100;
+  int TabuLinKerniganMaxTime = 900;
+  int third_size = 5000;
   static inline int small_window_size = 7;
   static inline int greedy_window_size = 2000;
   static inline int two_opt_window_size = 5000;
   static inline int three_opt_window_size = 150;
   static inline int pop_rebuild_min_num = 100;
   static inline int pop_annealing_retry = 1;
+  static inline int tabu_small_ban = 1000;
+  static inline int max_block_len = 10;
   bool sort_order_is_set = false;
   double cEps = 1E-2  ;
   double conver_coef = 0.225;
@@ -46,15 +63,28 @@ struct TSPSolver{
   double min_mut_prob = 0.098;
   double change = 0.15;
   double destroy = 0.015;
+  double alpha_proc = 0.985;
+  double beta_proc = 0.999;
+  //double gamma_proc = 0.9;
+  double many_edges = 0.95;
+  //double less_edges = 0.1;
+  double group_gamma = 0.5;
   long double temp;
   long double temp_change = 0.9999;
   long double temp_stop = 1E-8;
   long double ptemp = 1E5;
   long double ptemp_change = 0.995;
   long double ptemp_stop = 1E-4;
+  long long time = 0;
   db cInfty = 1E10;
+  db fifth_root;
+  db len_small;
+  db len_big;
+  db len_small_for_ban;
   Ans annelcur;
   Ans popcur;
+  bool done_group = false;
+  std::unordered_map<std::pair<int, int>, std::pair<int, int>> tabu_list;
 
   void InputData(std::string& path) {
     std::ifstream input_file(path);
@@ -173,7 +203,7 @@ struct TSPSolver{
         }
       }
       if (!is_done) {
-        for (int j = f_start; j < num_of_points; ++j) {
+        /*for (int j = f_start; j < num_of_points; ++j) {
           if (is_used[j]) {
             ++f_start;
             continue;
@@ -183,7 +213,21 @@ struct TSPSolver{
           AddNeibShip(j, ans.first[i]);
           ans.first.push_back(j);
           break;
+        }*/
+        int closest = -1;
+        db dst = cInfty;
+        for (int j = 0; j < num_of_points; ++j) {
+          if (!is_used[j]) {
+            if (dst > Dist(ans.first[i], j)) {
+              dst = Dist(ans.first[i], j);
+              closest = j;
+            }
+          }
         }
+        is_used[closest] = true;
+        AddNeibShip(ans.first[i], closest);
+        AddNeibShip(closest, ans.first[i]);
+        ans.first.push_back(closest);
       }
     }
     ans.second = FindDist(ans.first);
@@ -214,7 +258,7 @@ struct TSPSolver{
       auto end = std::chrono::steady_clock::now();
       auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
       if (duration.count() > 60) {
-        std::cout << "iter is: " << iter << "\n";
+        //std::cout << "iter is: " << iter << "\n";
         break;
       }
       bool improved = false;
@@ -236,6 +280,15 @@ struct TSPSolver{
       }
     }
     return ans;
+  }
+
+  void Save() {
+    std::ofstream output_file("output2.txt");
+    output_file << std::fixed << std::setprecision(5) << best_known.second << "\n";
+    for (size_t i = 0; i < best_known.first.size(); ++i) {
+      output_file << best_known.first[i] << " ";
+    }
+    output_file << "\n";
   }
 
   void OutAns(std::ostringstream& out) {
@@ -270,10 +323,13 @@ struct TSPSolver{
     bool had_changes = false;
     bool round_improved = false;
     auto start = std::chrono::steady_clock::now();
+    int iteration_num = 0;
+    long long all_iters = 0;
     do {
       auto end = std::chrono::steady_clock::now();
       auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
-      if (duration.count() > 120) {
+      if (duration.count() > 900) {
+        //std::cout << "breaked\n";
         break;
       }
       round_improved = false;
@@ -365,6 +421,7 @@ struct TSPSolver{
             break;
           }
         }
+        ++all_iters;
         if (total_delta >= -cEps) {
           while (!changes.empty()) {
             cycle[changes.top().first] = changes.top().second;
@@ -373,6 +430,7 @@ struct TSPSolver{
           continue;
         }
         if (!changes.empty()) {
+          ++iteration_num;
           had_changes = true;
           round_improved = true;
         }
@@ -381,6 +439,7 @@ struct TSPSolver{
     if (!had_changes) {
       return false;
     }
+    //std::cout << "iteration num: " << iteration_num << " " << all_iters << "\n";
     std::vector<bool> used(num_of_points, false);
     int begin = path[0];
     int prev = cycle[begin].first;
@@ -417,7 +476,7 @@ struct TSPSolver{
   void RunKernigan() {
     Ans candidate = best_known;
     if (!LinKernigan(candidate.first)) {
-      std::cout << "nothing :(\n";
+      //std::cout << "nothing :(\n";
       return;
     }
     //std::cout << "Done!" << "\n";
@@ -917,7 +976,7 @@ struct TSPSolver{
                   << -delta_avg / temp << " " << std::exp(-delta_avg / temp) << "\n";
       }*/
     }
-    std::cout << "Final iters: " << iters << "\n";
+    //std::cout << "Final iters: " << iters << "\n";
   }
 
   bool NextPerm(std::vector<int>& perm) {
@@ -1136,20 +1195,20 @@ struct TSPSolver{
       for (int i = 0; i < two_size; ++i) {
         window.push_back(popcur.first[(start + i) % num_of_points]);
       }
-      TwoOptPopMusic(window, two_size);
+      /*TwoOptPopMusic(window, two_size);
       ThreeOptPopMusic(window, three_size);
       TwoOptPopMusic(window, two_size);
-      ThreeOptPopMusic(window, three_size);
-      /*int iter = 0;
+      ThreeOptPopMusic(window, three_size);*/
+      //int iter = 0;
       while (true) {
-        ++iter;
+        //++iter;
         bool first = TwoOptPopMusic(window, two_size);
         bool second = ThreeOptPopMusic(window, three_size);
         if (!first && !second) {
           break;
         }
       }
-      if (iter > 8) {
+      /*if (iter > 8) {
         std::cout << "iter is: " << iter << std::endl;
       }*/
       for (int i = 0; i < two_size; ++i) {
@@ -1385,10 +1444,10 @@ struct TSPSolver{
     int iters = 0;
     while (ptemp > ptemp_stop) {
       ++iters;
-      std::cout << iters << " ";
+      /*std::cout << iters << " ";
       if (iters % 100 == 0) {
         std::cout << std::endl;
-      }
+      }*/
       /*int first = distrib(gen);
       int second = distrib(gen);*/
       Ans cand = AsymAnnealingStep(new_vert, answ_cur);
@@ -1410,7 +1469,7 @@ struct TSPSolver{
     }
     AsymTwoOptMaxIter(new_vert, answ_cur, n_n_of_ver);
     AsymetricMakeBetter(answ, answ_cur);
-    std::cout << "Final iters: " << iters << "\n";
+    //std::cout << "Final iters: " << iters << "\n";
   }
 
   std::vector<int> SolveAsymetricTsp(std::vector<VecPair>& new_vert) {
@@ -1522,14 +1581,459 @@ struct TSPSolver{
     MakeBetter(popcur);
   }
 
+  long long NextTabuTime(int num_of_visits) {
+    return time + static_cast<long long>(std::pow(num_of_visits, fifth_root));
+  }
+
+  int GetNumOfBranches(int depth, int type) {
+    const int arr1[10] = {16, 11, 8, 4, 1, 1, 1, 1, 1, 1};
+    const int arr2[10] = {8, 6, 3, 1, 1, 1, 1, 1, 1, 1};
+    const int arr3_1[10] = {1, 1, 1, 1, 1, 0, 0, 0, 0, 0};
+    const int arr3_2[10] = {2, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+    const int arr3_3[10] = {8, 6, 2, 1, 1, 1, 1, 1, 1, 1};
+    if (num_of_points < 250) {
+      return arr1[depth];
+    }
+    if (num_of_points < third_size) {
+      return arr2[depth];
+    }
+    if (type == 0) {
+      return arr3_1[depth];
+    }
+    if (type == 1) {
+      return arr3_2[depth];
+    }
+    return arr3_3[depth];
+  }
+
+  void AcceptEdge(int& v, int& w, int& new_w, int& new_from,
+      std::vector<VecPair>& cycle, db& total_delta, db& len_delta,
+      std::stack<std::pair<int, VecPair>>& changes) {
+    int fut_w = cycle[new_w].second;
+    if (fut_w == new_from) {
+      fut_w = cycle[new_w].first;
+    }
+    total_delta += len_delta;
+    changes.push(std::make_pair(w, cycle[w]));
+    changes.push(std::make_pair(v, cycle[v]));
+    changes.push(std::make_pair(new_w, cycle[new_w]));
+    changes.push(std::make_pair(fut_w, cycle[fut_w]));
+    VecPair w_swap = cycle[w];
+    VecPair v_swap = cycle[v];
+    VecPair new_w_swap = cycle[new_w];
+    VecPair fut_w_swap = cycle[fut_w];
+    if (w_swap.first == v) {
+      w_swap.first = fut_w;
+    } else {
+      w_swap.second = fut_w;
+    }
+    if (v_swap.first == w) {
+      v_swap.first = new_w;
+    } else {
+      v_swap.second = new_w;
+    }
+    if (new_w_swap.first == fut_w) {
+      new_w_swap.first = v;
+    } else {
+      new_w_swap.second = v;
+    }
+    if (fut_w_swap.first == new_w) {
+      fut_w_swap.first = w;
+    } else {
+      fut_w_swap.second = w;
+    }
+    cycle[w] = w_swap;
+    cycle[v] = v_swap;
+    cycle[new_w] = new_w_swap;
+    cycle[fut_w] = fut_w_swap;
+    v = fut_w;
+  }
+
+  char LinKerniganStep(int depth, int type, int& v, int& w, std::vector<VecPair>& cycle,
+      long long& tabu_succ, db& total_delta, std::stack<std::pair<int, VecPair>>& changes) {
+    if (depth >= LinKerniganMaxSearch) {
+      return 3;
+    }
+    int prev_w = v;
+    int cur_w = w;
+    int max_steps = std::min(LinKerniganMaxNeib, num_of_points);
+    std::priority_queue<std::tuple<db, int, int>> variant;
+    int num_of_vars = GetNumOfBranches(depth, type);
+    if (num_of_vars <= 0) {
+      return 0;
+    }
+    for (int i = 0; i < max_steps; ++i) {
+      int fut_w = cycle[cur_w].second;
+      if (fut_w == prev_w) {
+        fut_w = cycle[cur_w].first;
+      }
+      if (fut_w == v) {
+        break;
+      }
+      if (tabu_list.count(VecPair(cur_w, fut_w)) > 0) {
+        if (tabu_list[VecPair(cur_w, fut_w)].second > time) {
+          ++tabu_succ;
+        } else if (i > 0) {
+          db len_delta = Dist(v, cur_w) - Dist(v, w) - Dist(fut_w, cur_w) +
+                         Dist(fut_w, w);
+          variant.push(std::make_tuple(len_delta, cur_w, prev_w));
+          if (static_cast<int>(variant.size()) > num_of_vars) {
+            variant.pop();
+          }
+        }
+      } else if (i > 0) {
+        db len_delta = Dist(v, cur_w) - Dist(v, w) - Dist(fut_w, cur_w) +
+                       Dist(fut_w, w);
+        variant.push(std::make_tuple(len_delta, cur_w, prev_w));
+        if (static_cast<int>(variant.size()) > num_of_vars) {
+          variant.pop();
+        }
+      }
+      int next_w = cycle[cur_w].second;
+      if (next_w == prev_w) {
+        next_w = cycle[cur_w].first;
+      }
+      prev_w = cur_w;
+      cur_w = next_w;
+      if (cur_w == v) {
+        break;
+      }
+    }
+    if (variant.empty()) {
+      return 0;
+    }
+    std::vector<std::tuple<db, int, int>> vars;
+    vars.reserve(variant.size());
+    while (!variant.empty()) {
+      vars.push_back(variant.top());
+      variant.pop();
+    }
+    db best_total_delta = total_delta;
+    int best_id = -1;
+    for (int id = static_cast<int>(vars.size()) - 1; id >= 0; --id) {
+      db len_delta = std::get<0>(vars[size_t(id)]);
+      int new_w = std::get<1>(vars[size_t(id)]);
+      int new_from = std::get<2>(vars[size_t(id)]);
+      int fut_w = cycle[new_w].second;
+      if (fut_w == new_from) {
+        fut_w = cycle[new_w].first;
+      }
+      if (fut_w == v) {
+        continue;
+      }
+      size_t old_size = changes.size();
+      db old_total_delta = total_delta;
+      int old_v = v;
+      AcceptEdge(v, w, new_w, new_from, cycle, total_delta, len_delta, changes);
+      LinKerniganStep(depth + 1, type, v, w, cycle, tabu_succ, total_delta, changes);
+      if (total_delta < best_total_delta) {
+        best_total_delta = total_delta;
+        best_id = id;
+      }
+      while (changes.size() > old_size) {
+        cycle[changes.top().first] = changes.top().second;
+        changes.pop();
+      }
+      total_delta = old_total_delta;
+      v = old_v;
+    }
+    if (best_total_delta >= -cEps) {
+      return 2;
+    }
+    if (best_id == -1) {
+      total_delta = best_total_delta;
+      return 1;
+    }
+    db len_delta = std::get<0>(vars[size_t(best_id)]);
+    int new_w = std::get<1>(vars[size_t(best_id)]);
+    int new_from = std::get<2>(vars[size_t(best_id)]);
+    AcceptEdge(v, w, new_w, new_from, cycle, total_delta, len_delta, changes);
+    if (total_delta < -cEps) {
+      return 1;
+    }
+    LinKerniganStep(depth + 1, type, v, w, cycle, tabu_succ, total_delta, changes);
+    if (total_delta < -cEps) {
+      return 1;
+    }
+    return 2;
+  }
+
+  /*int ManyEdgesBan(std::vector<VecPair>& cycle) {
+    int in_a_row = 0;
+    int banned = 0;
+    int ban_in_a_row = 0;
+    for (int start = 0; start < 2 * num_of_points; ++start) {
+      int v = start / 2;
+      int w = (start % 2 == 0 ? cycle[v].first : cycle[v].second);
+      if (tabu_list.count(VecPair(v, w)) > 0) {
+        if (tabu_list[VecPair(v, w)].second > time) {
+          continue;
+        }
+      }
+      if (Dist(v, w) < len_small_for_ban) {
+        ++in_a_row;
+        if (ban_in_a_row > 9) {
+          in_a_row = 0;
+          ban_in_a_row = 0;
+          continue;
+        }
+        if (in_a_row == 1) {
+          continue;
+        }
+        if (tabu_list.count(VecPair(v, w)) > 0) {
+          long long cur_ban = tabu_list[VecPair(v, w)].second;
+          tabu_list[VecPair(v, w)].second = std::max(cur_ban, time + tabu_small_ban);
+        } else {
+          tabu_list[VecPair(v, w)] = VecPair(0, time + tabu_small_ban);
+        }
+        ++ban_in_a_row;
+        ++banned;
+      }
+      in_a_row = 0;
+      ban_in_a_row = 0;
+    }
+    std::cout << "banned: " << banned << std::endl;
+    return banned;
+  }*/
+
+  void MakeLens(std::vector<VecPair>& cycle, std::vector<db>& lens) {
+    for (int start = 0; start < 2 * num_of_points; ++start) {
+      int v = start / 2;
+      int w = (start % 2 == 0 ? cycle[v].first : cycle[v].second);
+      if (tabu_list.count(VecPair(v, w)) > 0) {
+        if (tabu_list[VecPair(v, w)].second > time) {
+          continue;
+        }
+      }
+      lens.push_back(Dist(v, w));
+    }
+    std::sort(lens.begin(), lens.end());
+  }
+
+  void SetLen(std::vector<VecPair>& cycle) {
+    std::vector<db> lens;
+    MakeLens(cycle, lens);
+    int lenn = static_cast<int>(lens.size());
+    int place_small = static_cast<int>(static_cast<db>(lens.size()) * alpha_proc);
+    if (lenn - place_small < 200) {
+      place_small = std::max(lenn - 200, 0);
+    }
+    int place_large = static_cast<int>(static_cast<db>(lens.size()) * beta_proc);
+    if (lenn - place_large < 20) {
+      place_large = std::max(lenn - 20, 0);
+    }
+    //int place_very_small = static_cast<int>(static_cast<db>(lens.size()) * gamma_proc);
+    len_small = lens[place_small];
+    len_big = lens[place_large];
+    /*len_small_for_ban = lens[place_very_small];
+    int edges_left = lens.size();
+    if (num_of_points > 5000) {
+      if (int(lens.size()) > int(double(num_of_points) * many_edges)) {
+        edges_left -= ManyEdgesBan(cycle);
+      }
+    }*/
+    //std::cout << "Len: " << lens.size() << " " << len_small << " " << len_big   << "; Time: " << time << std::endl;
+  }
+
+  void GroupAndLinKernigan(std::vector<VecPair>& cycle) {
+    //std::cout << "group" << std::endl;
+    std::vector<db> lens;
+    MakeLens(cycle, lens);
+    int place_very_small = static_cast<int>(static_cast<db>(lens.size()) * group_gamma);
+    db small_for_sure = lens[place_very_small];
+    std::vector<std::vector<int>> blocks;
+    int v = 0;
+    int w = cycle[v].first;
+    blocks.push_back({v});
+    for (int i = 1; i < num_of_points; ++i) {
+      int new_w = cycle[w].first;
+      if (new_w == v) {
+        new_w = cycle[w].second;
+      }
+      if ((Dist(v, w) >= small_for_sure) || (blocks.back().size() >= max_block_len)) {
+        blocks.push_back({w});
+        v = w;
+        w = new_w;
+        continue;
+      }
+      blocks.back().push_back(w);
+      v = w;
+      w = new_w;
+    }
+    std::ofstream output_file("blocks.txt");
+    for (int i = 0; i < blocks.size(); ++i) {
+      for (int j = 0; j < blocks[i].size(); ++j) {
+        output_file << blocks[i][j] << " ";
+      }
+      output_file << "\n";
+    }
+    TSPSolver solver;
+    int new_num_of_points = blocks.size();
+    solver.num_of_points = new_num_of_points;
+    solver.points.reserve(new_num_of_points);
+    solver.done_group = true;
+    for (int i = 0; i < new_num_of_points; ++i) {
+      int mid = blocks[i].size() / 2;
+      solver.points.push_back(points[blocks[i][mid]]);
+    }
+    solver.TabuLinKerniganMaxTime = TabuLinKerniganMaxTime / 3;
+    solver.Solve();
+    solver.Save();
+    //std::cout << "group_solved" << std::endl;
+    std::vector<int> new_path;
+    new_path.reserve(num_of_points);
+    std::ofstream output_file_path("new_paths.txt");
+    output_file_path << -1 << "\n";
+    for (int i = 0; i < new_num_of_points; ++i) {
+      for (int j = 0; j < blocks[solver.best_known.first[i]].size(); ++j) {
+        new_path.push_back(blocks[solver.best_known.first[i]][j]);
+        output_file_path << new_path[new_path.size() - 1] << " ";
+      }
+    }
+    for (int i = 0; i < num_of_points; ++i) {
+      int cur = new_path[i];
+      int prev = new_path[(i - 1 + num_of_points) % num_of_points];
+      int next = new_path[(i + 1) % num_of_points];
+      cycle[cur] = VecPair(prev, next);
+    }
+  }
+
+  bool TabuLinKernigan(std::vector<int>& path) {
+    fifth_root = std::pow(num_of_points, 0.2) / 2;
+    std::vector<VecPair> cycle(num_of_points);
+    for (int i = 0; i < num_of_points; ++i) {
+      int cur = path[i];
+      int prev = path[(i - 1 + num_of_points) % num_of_points];
+      int next = path[(i + 1) % num_of_points];
+      cycle[cur] = VecPair(prev, next);
+    }
+    bool had_changes = false;
+    bool round_improved = false;
+    auto start = std::chrono::steady_clock::now();
+    int iteration_num = 0;
+    long long all_iters = 0;
+    time = 0;
+    tabu_list.clear();
+    long long tabu_succ = 0;
+    do {
+      auto end = std::chrono::steady_clock::now();
+      auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
+      if (duration.count() > TabuLinKerniganMaxTime) {
+        //std::cout << "breaked\n";
+        break;
+      }
+      round_improved = false;
+      SetLen(cycle);
+      for (int start = 0; start < 2 * num_of_points; ++start) {
+        int v = path[start / 2];
+        int w = (start % 2 == 0 ? cycle[v].first : cycle[v].second);
+        if (tabu_list.count(VecPair(v, w)) > 0) {
+          if (tabu_list[VecPair(v, w)].second > time) {
+            ++tabu_succ;
+            continue;
+          }
+        }
+        std::stack<std::pair<int, VecPair>> changes;
+        db total_delta = 0;
+        int type = 0;
+        db start_edge = Dist(v, w);
+        if (start_edge >= len_small) {
+          if (start_edge > len_big) {
+            type = 2;
+          } else {
+            type = 1;
+          }
+        }
+        char status = LinKerniganStep(0, type, v, w, cycle, tabu_succ, total_delta, changes);
+        ++all_iters;
+        if (status != 1) {
+          if (tabu_list.count(VecPair(v, w)) > 0) {
+            tabu_list[VecPair(v, w)].second = NextTabuTime(tabu_list[VecPair(v, w)].first);
+            ++tabu_list[VecPair(v, w)].first;
+          } else {
+            tabu_list[VecPair(v, w)] = VecPair(1, NextTabuTime(0));
+          }
+          continue;
+        }
+        ++iteration_num;
+        ++time;
+        had_changes = true;
+        round_improved = true;
+      }
+      if ((num_of_points > third_size) && (!done_group)) {
+        GroupAndLinKernigan(cycle);
+        done_group = true;
+      }
+    } while (round_improved);
+    if (!had_changes) {
+      return false;
+    }
+    //std::cout << "iteration num: " << iteration_num << " " << all_iters << " " << tabu_succ << "\n";
+    std::vector<bool> used(num_of_points, false);
+    int begin = path[0];
+    int prev = cycle[begin].first;
+    int cur = begin;
+    for (int i = 0; i < num_of_points; ++i) {
+      if (used[cur]) {
+        return false;
+      }
+      used[cur] = true;
+      int nxt = cycle[cur].first;
+      if (nxt == prev) {
+        nxt = cycle[cur].second;
+      }
+      prev = cur;
+      cur = nxt;
+    }
+    if (cur != begin) {
+      return false;
+    }
+    prev = cycle[begin].first;
+    cur = begin;
+    for (int i = 0; i < num_of_points; ++i) {
+      path[i] = cur;
+      int nxt = cycle[cur].first;
+      if (nxt == prev) {
+        nxt = cycle[cur].second;
+      }
+      prev = cur;
+      cur = nxt;
+    }
+    return true;
+  }
+
+  void RunTabuLinKernigan() {
+    Ans candidate = best_known;
+    if (!TabuLinKernigan(candidate.first)) {
+      //std::cout << "nothing :(\n";
+      return;
+    }
+    candidate.second = FindDist(candidate.first);
+    MakeBetter(candidate);
+  }
+
+  void Solve() {
+    Ans eur;
+    eur.first.reserve(num_of_points);
+    for (int i = 0; i < num_of_points; ++i) {
+      eur.first.push_back(i);
+    }
+    eur.second = FindDist(eur.first);
+    best_known = eur;
+    //std::cout << "started_in_started" << std::endl;
+    RunTabuLinKernigan();
+  }
+
  public:
 
   int cMaxForSort = 1915; // Max time is 2 seconds, since x^2 log_2(x)
-  int cNumOfneigh = 100;
-  int beg_iters = 500;
+  int cNumOfneigh = 400;
+  int beg_iters = 2000;
   int two_opt_iters = 500;
   Ans best_known;
  
+  TSPSolver() = default;
+
   TSPSolver(std::string path, std::ostringstream& out) {
     InputData(path);
     Ans eur;
@@ -1546,20 +2050,26 @@ struct TSPSolver{
       two_opt_iters = 1000;
       eur = ClosestEur2(0);
       best_known = eur;
-      std::random_device rd;
-      std::mt19937 gen(rd());
+      std::mt19937 gen(332);
       std::uniform_int_distribution<int> dist(0, num_of_points - 1); 
       for (int i = 1; i < beg_iters; ++i) {
         eur = ClosestEur2(dist(gen));
         MakeBetter(eur);
       }
     }
-    /*eur = TwoOptMaxIter(best_known);
+    //std::cout << "started" << std::endl;
+    /*// solution 1 and 2
+    eur = TwoOptMaxIter(best_known);
     MakeBetter(eur);
     RunKernigan();
     GeneticsWithMemetics();
     Annealing();*/
-    PopMusic();
+
+    //Solution 3
+    //PopMusic();
+
+    //Solution 4
+    RunTabuLinKernigan();
     OutAns(out);
   }
 };
