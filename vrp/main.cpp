@@ -343,15 +343,21 @@ struct VRPSolver {
   int crossovers_num = 15;
   int pop_lifetime = 40;
   int max_replace = 10;
+  int max_K = 10;
+  int losts_num = 400;
+  int tabu_wait = 2;
   double secs = 0;
+  long long time = 0;
   db c = 0;
   db cur_ans_val;
   db best_ans_val = cInfty;
   db mutate_prob = 0.1;
   db replace_prob = 0.2;
+  db percent = 0.30;
   std::vector<db> cur_demand;
   std::vector<int> begins;
   std::vector<int> ends;
+  std::vector<int> tabu_list;
   std::vector<std::vector<int>> best_ans;
   std::vector<std::vector<std::vector<int>>> population;
   std::vector<Shopper> shoppers;
@@ -631,8 +637,7 @@ struct VRPSolver {
     for (int i = 0; i < n; ++i) {
       perm.push_back(i + 1);
     }
-    std::random_device rd;
-    std::mt19937 gen(rd());
+    std::mt19937 gen(228);
     auto start = std::chrono::steady_clock::now();
     //int counter = 0;
     int i = 0;
@@ -654,9 +659,6 @@ struct VRPSolver {
         break;
       }
       if ((i >= cGredTimes) && (duration.count() >= 2)) {
-        break;
-      }
-      if (i == 10) {
         break;
       }
       ++i;
@@ -707,9 +709,9 @@ struct VRPSolver {
       improved = RunTspForOneCar(car) || improved;
     }
     if (improved) {
-      std::cout << "TSP succed" << std::endl;
+      std::cout << "!";
     } else {
-      std::cout << "TSP lost" << std::endl;
+      std::cout << ".";
     }
     return improved;
   }
@@ -1120,15 +1122,469 @@ struct VRPSolver {
     }
   }
 
+  bool FindNewBestPlace() {
+    bool changed = false;
+    while (true) {
+      bool improved = false;
+      for (int it = 1; it <= n; ++it) {
+        int who = it;
+        int old_car = shoppers[who].car;
+        int old_prev = shoppers[who].prev;
+        int old_next = shoppers[who].next;
+        db rem_delta = Dist(shoppers[old_prev], shoppers[old_next]) -
+                       Dist(shoppers[old_prev], shoppers[who]) -
+                       Dist(shoppers[who], shoppers[old_next]);
+        cur_demand[old_car] -= shoppers[who].demand;
+        if (old_prev == 0) {
+          begins[old_car] = old_next;
+          if (old_next != 0) {
+            shoppers[old_next].is_beg = true;
+          }
+        } else {
+          shoppers[old_prev].next = old_next;
+        }
+        if (old_next == 0) {
+          ends[old_car] = old_prev;
+          if (old_prev != 0) {
+            shoppers[old_prev].is_end = true;
+          }
+        } else {
+          shoppers[old_next].prev = old_prev;
+        }
+        shoppers[who].car = -1;
+        shoppers[who].prev = -1;
+        shoppers[who].next = -1;
+        shoppers[who].is_beg = false;
+        shoppers[who].is_end = false;
+        int best_car = -1;
+        int best_from = -1;
+        int best_to = -1;
+        BestNewPlace(best_car, best_from, best_to, who);
+        if (best_car == -1) {
+          InsertShopperBetween(who, old_car, old_prev, old_next);
+          continue;
+        }
+        db add_delta = Dist(shoppers[best_from], shoppers[who]) +
+                       Dist(shoppers[who], shoppers[best_to]) -
+                       Dist(shoppers[best_from], shoppers[best_to]);
+        db total_delta = rem_delta + add_delta;
+        if (total_delta > -cEps) {
+          InsertShopperBetween(who, old_car, old_prev, old_next);
+          continue;
+        }
+        InsertShopperBetween(who, best_car, best_from, best_to);
+        improved = true;
+        changed = true;
+        break;
+      }
+      if (!improved) {
+        break;
+      }
+    }
+    return changed;
+  }
+
+  void RemoveShopper(int who) {
+    int car = shoppers[who].car;
+    int prev = shoppers[who].prev;
+    int next = shoppers[who].next;
+    if (prev == 0) {
+      begins[car] = next;
+      if (next != 0) {
+        shoppers[next].is_beg = true;
+      }
+    } else {
+      shoppers[prev].next = next;
+    }
+    if (next == 0) {
+      ends[car] = prev;
+      if (prev != 0) {
+        shoppers[prev].is_end = true;
+      }
+    } else {
+      shoppers[next].prev = prev;
+    }
+    cur_demand[car] -= shoppers[who].demand;
+    shoppers[who].car = -1;
+    shoppers[who].prev = -1;
+    shoppers[who].next = -1;
+    shoppers[who].is_beg = false;
+    shoppers[who].is_end = false;
+  }
+
+  bool SwapTwo() {
+    bool changed = false;
+    while (true) {
+      bool improved = false;
+      for (int i = 1; i <= n; ++i) {
+        for (int j = i + 1; j <= n; ++j) {
+          int car1 = shoppers[i].car;
+          int car2 = shoppers[j].car;
+          if (car1 != car2) {
+            if (cur_demand[car1] + shoppers[j].demand -
+                    shoppers[i].demand > c) {
+              continue;
+            }
+            if (cur_demand[car2] + shoppers[i].demand -
+                    shoppers[j].demand > c) {
+              continue;
+            }
+          }
+          int prev1 = shoppers[i].prev;
+          int next1 = shoppers[i].next;
+          int prev2 = shoppers[j].prev;
+          int next2 = shoppers[j].next;
+          bool adjacent = car1 == car2 && (next1 == j || next2 == i);
+          db rem_delta;
+          db add_delta;
+          if (adjacent) {
+            int first = (next1 == j ? i : j);
+            int second = (next1 == j ? j : i);
+            int prev = shoppers[first].prev;
+            int next = shoppers[second].next;
+            rem_delta = Dist(shoppers[prev], shoppers[first]) +
+                        Dist(shoppers[first], shoppers[second]) +
+                        Dist(shoppers[second], shoppers[next]);
+            add_delta = Dist(shoppers[prev], shoppers[second]) +
+                        Dist(shoppers[second], shoppers[first]) +
+                        Dist(shoppers[first], shoppers[next]);
+          } else {
+            rem_delta = Dist(shoppers[prev1], shoppers[i]) +
+                        Dist(shoppers[i], shoppers[next1]) +
+                        Dist(shoppers[prev2], shoppers[j]) +
+                        Dist(shoppers[j], shoppers[next2]);
+            add_delta = Dist(shoppers[prev1], shoppers[j]) +
+                        Dist(shoppers[j], shoppers[next1]) +
+                        Dist(shoppers[prev2], shoppers[i]) +
+                        Dist(shoppers[i], shoppers[next2]);
+          }
+          if (add_delta >= rem_delta - cEps) {
+            continue;
+          }
+          if (adjacent) {
+            int first = (next1 == j ? i : j);
+            int second = (next1 == j ? j : i);
+            int prev = shoppers[first].prev;
+            int next = shoppers[second].next;
+            RemoveShopper(first);
+            RemoveShopper(second);
+            InsertShopperBetween(second, car1, prev, next);
+            InsertShopperBetween(first, car1, second, next);
+          } else {
+            RemoveShopper(i);
+            RemoveShopper(j);
+            InsertShopperBetween(j, car1, prev1, next1);
+            InsertShopperBetween(i, car2, prev2, next2);
+          }
+          improved = true;
+          changed = true;
+        }
+      }
+      if (!improved) {
+        break;
+      }
+    }
+    return changed;
+  }
+
+  bool TwoOpt(int car) {
+    bool changed = false;
+    while (true) {
+      bool improved = false;
+      int left = begins[car];
+      while (left != 0) {
+        int right = shoppers[left].next;
+        while (right != 0) {
+          int prev = shoppers[left].prev;
+          int next = shoppers[right].next;
+          db delta = Dist(shoppers[prev], shoppers[right]) +
+                     Dist(shoppers[left], shoppers[next]) -
+                     Dist(shoppers[prev], shoppers[left]) -
+                     Dist(shoppers[right], shoppers[next]);
+          if (delta < -cEps) {
+            int cur = left;
+            while (true) {
+              int old_next = shoppers[cur].next;
+              shoppers[cur].next = shoppers[cur].prev;
+              shoppers[cur].prev = old_next;
+              if (cur == right) {
+                break;
+              }
+              cur = old_next;
+            }
+            if (prev == 0) {
+              begins[car] = right;
+            } else {
+              shoppers[prev].next = right;
+            }
+            shoppers[right].prev = prev;
+            shoppers[right].is_beg = (prev == 0);
+            shoppers[right].is_end = false;
+            if (next == 0) {
+              ends[car] = left;
+            } else {
+              shoppers[next].prev = left;
+            }
+            shoppers[left].next = next;
+            shoppers[left].is_beg = false;
+            shoppers[left].is_end = (next == 0);
+            cur_ans_val += delta;
+            changed = true;
+            improved = true;
+            break;
+          }
+          right = shoppers[right].next;
+        }
+        if (improved) {
+          break;
+        }
+        left = shoppers[left].next;
+      }
+      if (!improved) {
+        break;
+      }
+    }
+    return changed;
+  }
+
+  bool TwoOpt() {
+    bool changed = false;
+    while(true) {
+      bool improved = false;
+      for (int i = 0 ; i < v; ++i) {
+        improved = improved || TwoOpt(i);
+      }
+      if (!improved) {
+        break;
+      }
+      changed = true;
+    }
+    return changed;
+  }
+
+  bool Cross(bool can_make_worse = false, bool tabu_on = false) {
+    db total_worse = 0;
+    bool changed = false;
+    while (true) {
+      bool improved = false;
+      for (int i = 1; i <= n; ++i) {
+        for (int j = i + 1; j <= n; ++j) {
+          int car1 = shoppers[i].car;
+          int car2 = shoppers[j].car;
+          if (car1 == car2) {
+            continue;
+          }
+          db first_dem = shoppers[i].demand;
+          db second_dem = shoppers[j].demand;
+          int cur_first = i;
+          int cur_second = j;
+          int best_first = -1;
+          int best_second = -1;
+          db best_delta = cInfty;
+          for (int i1 = 0; i1 < max_K; ++i1) {
+            cur_second = j;
+            second_dem = shoppers[j].demand;
+            for (int j1 = 0; j1 < max_K; ++j1) {
+              if ((cur_demand[car1] - first_dem + second_dem > c) || 
+                  (cur_demand[car2] + first_dem - second_dem > c)) {
+                if (shoppers[cur_second].is_end) {
+                  break;
+                }
+                cur_second = shoppers[cur_second].next;
+                second_dem += shoppers[cur_second].demand;
+                continue;
+              }
+              int prev1 = shoppers[i].prev;
+              int prev2 = shoppers[j].prev;
+              int next1 = shoppers[cur_first].next;
+              int next2 = shoppers[cur_second].next;
+              db rem_delta = Dist(shoppers[prev1], shoppers[i]) +
+                             Dist(shoppers[cur_first], shoppers[next1]) +
+                             Dist(shoppers[prev2], shoppers[j]) +
+                             Dist(shoppers[cur_second], shoppers[next2]);
+              db add_delta = Dist(shoppers[prev1], shoppers[j]) +
+                             Dist(shoppers[cur_second], shoppers[next1]) +
+                             Dist(shoppers[prev2], shoppers[i]) +
+                             Dist(shoppers[cur_first], shoppers[next2]);
+              if (add_delta - rem_delta < best_delta) {
+                best_first = cur_first;
+                best_second = cur_second;
+                best_delta = add_delta - rem_delta;
+              }
+              if (shoppers[cur_second].is_end) {
+                break;
+              }
+              cur_second = shoppers[cur_second].next;
+              second_dem += shoppers[cur_second].demand;
+            }
+            if (shoppers[cur_first].is_end) {
+              break;
+            }
+            cur_first = shoppers[cur_first].next;
+            first_dem += shoppers[cur_first].demand;
+          }
+          if ((best_delta >= -cEps) && !can_make_worse) {
+            continue;
+          }
+          if (can_make_worse && tabu_on && (best_delta >= -cEps)) {
+            if ((tabu_list[car1] > time) || (tabu_list[car2] > time)) {
+              continue;
+            }
+          }
+          if (best_delta >= -cEps) {
+            if ((total_worse + best_delta > cur_ans_val * percent) || (best_first == -1)) {
+              continue;
+            }
+            total_worse += std::max(best_delta, db(0));
+          }
+          int prev1 = shoppers[i].prev;
+          int next1 = shoppers[best_first].next;
+          int prev2 = shoppers[j].prev;
+          int next2 = shoppers[best_second].next;
+          db best_first_dem = 0;
+          db best_second_dem = 0;
+          int cur = i;
+          while (true) {
+            shoppers[cur].car = car2;
+            best_first_dem += shoppers[cur].demand;
+            if (cur == best_first) {
+              break;
+            }
+            cur = shoppers[cur].next;
+          }
+          cur = j;
+          while (true) {
+            shoppers[cur].car = car1;
+            best_second_dem += shoppers[cur].demand;
+            if (cur == best_second) {
+              break;
+            }
+            cur = shoppers[cur].next;
+          }
+          cur_demand[car1] += best_second_dem - best_first_dem;
+          cur_demand[car2] += best_first_dem - best_second_dem;
+          shoppers[i].is_beg = false;
+          shoppers[best_first].is_end = false;
+          shoppers[j].is_beg = false;
+          shoppers[best_second].is_end = false;
+          if (prev1 == 0) {
+            begins[car1] = j;
+          } else {
+            shoppers[prev1].next = j;
+          }
+          shoppers[j].prev = prev1;
+          shoppers[j].is_beg = (prev1 == 0);
+          if (next1 == 0) {
+            ends[car1] = best_second;
+          } else {
+            shoppers[next1].prev = best_second;
+          }
+          shoppers[best_second].next = next1;
+          shoppers[best_second].is_end = (next1 == 0);
+          if (prev2 == 0) {
+            begins[car2] = i;
+          } else {
+            shoppers[prev2].next = i;
+          }
+          shoppers[i].prev = prev2;
+          shoppers[i].is_beg = (prev2 == 0);
+          if (next2 == 0) {
+            ends[car2] = best_first;
+          } else {
+            shoppers[next2].prev = best_first;
+          }
+          shoppers[best_first].next = next2;
+          shoppers[best_first].is_end = (next2 == 0);
+          cur_ans_val += best_delta;
+          improved = true;
+          changed = true;
+          tabu_list[car1] = time + tabu_wait;
+          tabu_list[car2] = time + tabu_wait;
+          ++time;
+        }
+      }
+      if (!improved || can_make_worse) {
+        break;
+      }
+    }
+    return changed;
+  }
+
+  void LocalSearch() {
+    auto start = std::chrono::steady_clock::now();
+    int losts = 0;
+    while(true) {
+      bool done = false;
+      done = done || FindNewBestPlace();
+      done = done || SwapTwo();
+      done = done || TwoOpt();
+      done = done || Cross();
+      if (!done) {
+        ++losts;
+        FindAns();
+        SetBetter();
+        if (losts > losts_num) {
+          break;
+        }
+        auto end = std::chrono::steady_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
+        if (duration.count() > 120) {
+          std::cout << "BREAKED" << std::endl;
+          break;
+        }
+        if(!Cross(true)) {
+          break;
+        }
+      }
+    }
+  }
+
+  void LocalSearchWithTabu() {
+    auto start = std::chrono::steady_clock::now();
+    tabu_list.assign(v, -1);
+    int losts = 0;
+    while(true) {
+      bool done = false;
+      done = done || FindNewBestPlace();
+      done = done || SwapTwo();
+      done = done || TwoOpt();
+      done = done || Cross();
+      if (!done) {
+        ++losts;
+        FindAns();
+        SetBetter();
+        if (losts > losts_num) {
+          break;
+        }
+        auto end = std::chrono::steady_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
+        if (duration.count() > 120) {
+          std::cout << "BREAKED" << std::endl;
+          break;
+        }
+        if (!Cross(true, true)) {
+          if (!Cross(true, false)) {
+            break;
+          }
+        }
+      }
+    }
+  }
+
  public:
   VRPSolver(std::string path, std::ostringstream& out) {
     InputData(path);
     begins.resize(v, 0);
     ends.resize(v, 0);
     GreedyEur();
-    TspAndGreedy();
-    Genetics();
+    
+    //TspAndGreedy();
+    //Genetics();
+    
+    SetBestAsCur();
+    //LocalSearch();
+    LocalSearchWithTabu();
+
     OutputData(out);
-    std::cout << "time: " << secs / calls << "\n";
   }
 };
