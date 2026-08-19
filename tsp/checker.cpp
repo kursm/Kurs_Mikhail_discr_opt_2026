@@ -72,9 +72,9 @@ int main() {
     std::ostringstream out;
     TSPSolver sol(path + tests[i], out);
     std::string ans = out.str();
-    std::cout << std::fixed << std::setprecision(5);
+    std::cout << std::fixed << std::setprecision(2);
     if (Correct(ans, i)) {
-      std::cout << "Test " << i + 1 << ": correct answer; "; 
+      std::cout << "Test " << i + 1 << ": correct answer; ";
     } else {
       std::cout << "Test " << i + 1 << ": incorrect answer!!;\n";
       continue;
