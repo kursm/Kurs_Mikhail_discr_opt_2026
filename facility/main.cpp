@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
@@ -16,18 +17,33 @@ struct FacilitySolver {
   struct Store;
   struct Guy;
   using db = long double;
+  using Ans = std::pair<std::vector<bool>, db>;
   static inline const db cInfty = 1E10;
+  static inline const db cEps = 1E-3;
   int shops;
   int people;
   int cClosestEurTimes = 1;
+  int pop_size = 8;
+  int child_size = 8;
+  int safe_zone = 0;
+  int corv_attempts = 20;
+  int gen_time = 180;
+  int mut_pos = 10;
   std::vector<Store> stores;
   std::vector<Guy> guys;
   std::vector<int> cur_ans;
   std::vector<int> best_ans;
   std::vector<std::vector<int>> guy_pref;
+  std::vector<std::vector<int>> hamming_dist;
+  std::vector<std::vector<bool>> population;
+  std::vector<db> pop_values;
   std::set<int> store_open;
+  std::vector<int> shufle;
   db cur_ans_val = cInfty;
   db best_ans_val = cInfty;
+  db pop_prob = 0.75;
+  db mut_prob = 0.20;
+  db corv_alpha = 0.02;
   bool cur_ans_counted = false;
 
   static db Dist(const Store& st, const Guy& gu) {
@@ -233,6 +249,7 @@ struct FacilitySolver {
           ans += stores[guy_pref[shufle[i]][j]].add_cost(guys[shufle[i]]);
           stores[guy_pref[shufle[i]][j]].Add(shufle[i], guys[shufle[i]]);
           where[shufle[i]] = guy_pref[shufle[i]][j];
+          guys[shufle[i]].go_to = guy_pref[shufle[i]][j];
           break;
         }
       }
@@ -244,11 +261,6 @@ struct FacilitySolver {
   }
 
   void ClosestEur() {
-    std::vector<int> shufle;
-    shufle.reserve(people);
-    for (int i = 0; i < people; ++i) {
-      shufle.push_back(i);
-    }
     std::random_device rd;
     std::mt19937 gen(rd());
     for (int i = 0; i < cClosestEurTimes; ++i) {
@@ -331,7 +343,7 @@ struct FacilitySolver {
           int sh_f = cur_ans[i];
           int sh_s = cur_ans[j];
           if (stores[sh_f].TwoOptBen(guys[i], guys[j]) +
-              stores[sh_s].TwoOptBen(guys[j], guys[i]) > 0) {
+              stores[sh_s].TwoOptBen(guys[j], guys[i]) > cEps) {
             changed = true;
             std::swap(cur_ans[i], cur_ans[j]);
             cur_ans_val -= stores[sh_f].TwoOptBen(guys[i], guys[j]) +
@@ -343,6 +355,8 @@ struct FacilitySolver {
             stores[sh_s].Rem(j, guys[j]);
             stores[sh_s].Add(i, guys[i]);
             stores[sh_f].Add(j, guys[j]);
+            guys[i].go_to = sh_s;
+            guys[j].go_to = sh_f;
             break;
           }
         }
@@ -359,28 +373,425 @@ struct FacilitySolver {
     return iter;
   }
 
-  void OneTwoOpt() {
+  bool OneTwoOpt() {
     if (best_ans_val == cInfty) {
       throw std::runtime_error("Solution for OneTwoOpt is not initialized");
     }
+    bool changed = false;
+    changed = changed || (OneOpt() > 0);
+    //std::cout << "Done iterations: " << OneOpt() << "\n";
+    SetBetter();
+    changed = changed || (TwoOpt() > 0);
+    //std::cout << "Done TwoOpt iterations: " << TwoOpt() << "\n";
+    SetBetter();
+    return changed;
+  }
+
+  bool TryClosingStore(int store_num) {
+    if (!stores[store_num].is_open) {
+      return false;
+    }
+    std::vector<int> store_guys(stores[store_num].guys.begin(),
+                                stores[store_num].guys.end());
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::shuffle(store_guys.begin(), store_guys.end(), gen);
+    for (int guy_num : store_guys) {
+      stores[store_num].Rem(guy_num, guys[guy_num]);
+    }
+    db delta = -stores[store_num].open;
+    bool all_moved = true;
+    for (int guy_num : store_guys) {
+      int new_store = -1;
+      for (int candidate : guy_pref[guy_num]) {
+        if (candidate != store_num && stores[candidate].is_open &&
+            stores[candidate].can_take(guys[guy_num])) {
+          new_store = candidate;
+          break;
+        }
+      }
+      if (new_store == -1) {
+        all_moved = false;
+        break;
+      }
+      delta += Dist(stores[new_store], guys[guy_num]) -
+               Dist(stores[store_num], guys[guy_num]);
+      stores[new_store].Add(guy_num, guys[guy_num]);
+      guys[guy_num].go_to = new_store;
+      cur_ans[guy_num] = new_store;
+    }
+    if (all_moved && delta < -cEps) {
+      cur_ans_val += delta;
+      return true;
+    }
+    for (int guy_num : store_guys) {
+      if (cur_ans[guy_num] != store_num) {
+        stores[cur_ans[guy_num]].Rem(guy_num, guys[guy_num]);
+      }
+      stores[store_num].Add(guy_num, guys[guy_num]);
+      guys[guy_num].go_to = store_num;
+      cur_ans[guy_num] = store_num;
+    }
+    return false;
+  }
+
+  bool CloseUnnessesary() {
+    bool changed = false;
+    while(true) {
+      bool improved = false;
+      std::vector<SPair1> sorted;
+      for (int i = 0; i < shops; ++i) {
+        sorted.push_back({i, stores[i].cap - stores[i].taken});
+      }
+      std::sort(sorted.begin(), sorted.end(), Comp1);
+      for (int i = shops - 1; i >= 0; --i) {
+        improved = improved || TryClosingStore(sorted[i].first);
+      }
+      if (improved) {
+        changed = true;
+      }
+      if (!improved) {
+        break;
+      }
+    }
+    CountCurAns();
+    SetBetter();
+    return changed;
+  }
+
+  void GeneralGreedy() {
     cur_ans = best_ans;
     CountCurAns();
     SetStoresAndGuys(cur_ans);
-    std::cout << "Done iterations: " << OneOpt() << "\n";
-    SetBetter();
-    std::cout << "Done TwoOpt iterations: " << TwoOpt() << "\n";
-    SetBetter();
+    while (true) {
+      bool changed = false;
+      changed = changed || OneTwoOpt();
+      changed = changed || CloseUnnessesary();
+      if (!changed) {
+        break;
+      }
+    }
+  }
+  
+  db MaskFitness(std::vector<bool>& mask, bool dont_improve = false) {
+    CleanStores();
+    cur_ans.assign(people, -1);
+    cur_ans_val = 0;
+    cur_ans_counted = false;
+    for (int i = 0; i < people; ++i) {
+      guys[i].go_to = -1;
+    }
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::shuffle(shufle.begin(), shufle.end(), gen);
+    for (int guy_num : shufle) {
+      int store_num = -1;
+      for (int candidate : guy_pref[guy_num]) {
+        if (mask[candidate] && stores[candidate].can_take(guys[guy_num])) {
+          store_num = candidate;
+          break;
+        }
+      }
+      if (store_num == -1) {
+        cur_ans_val = cInfty;
+        return cInfty;
+      }
+      cur_ans_val += stores[store_num].add_cost(guys[guy_num]);
+      stores[store_num].Add(guy_num, guys[guy_num]);
+      guys[guy_num].go_to = store_num;
+      cur_ans[guy_num] = store_num;
+    }
+    cur_ans_counted = true;
+    if (!dont_improve) {
+      OneTwoOpt();
+      CloseUnnessesary();
+      OneTwoOpt();
+    } else {
+      CloseUnnessesary();
+    }
+    /*while (true) {
+      bool changed = false;
+      changed = changed || OneTwoOpt();
+      changed = changed || CloseUnnessesary();
+      if (!changed) {
+        break;
+      }
+    }*/
+    for (int i = 0; i < shops; ++i) {
+      mask[i] = stores[i].is_open;
+    }
+    return cur_ans_val;
+  }
+
+  void GenPopulation() {
+    auto start = std::chrono::steady_clock::now();
+    std::vector<bool> best_mask(shops, false);
+    for (size_t i = 0; i < best_ans.size(); ++i) {
+      best_mask[best_ans[i]] = true;
+    }
+    population.clear();
+    bool dont_improve = false;
+    db val = MaskFitness(best_mask);
+    population.push_back(best_mask);
+    pop_values.push_back(val);
+    for (int i = 1; i < pop_size; ++i) {
+      auto end = std::chrono::steady_clock::now();
+      auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
+      if (duration.count() > 15) {
+        dont_improve = true;
+      }
+      if (duration.count() > 45) {
+        pop_size = i;
+        break;
+      }
+      std::vector<bool> new_mask = best_mask;
+      std::random_device rd;
+      std::mt19937 gen(rd());
+      std::uniform_real_distribution<long double> dis(0.0, 1.0);
+      for (int j = 0; j < shops; ++j) {
+        db value = dis(gen);
+        if (value <= pop_prob) {
+          new_mask[j] = !new_mask[j];
+        }
+      }
+      db value = MaskFitness(new_mask, dont_improve);
+      while (value > cInfty - cEps) {
+        for (int j = 0; j < shops; ++j) {
+          if (best_mask[j] && !new_mask[j]) {
+            new_mask[j] = true;
+          }
+          if (new_mask[j]) {
+            continue;
+          }
+          db value = dis(gen);
+          if (value <= pop_prob) {
+            new_mask[j] = !new_mask[j];
+          }
+        }
+        value = MaskFitness(new_mask, dont_improve);
+      }
+      population.push_back(new_mask);
+      pop_values.push_back(value);
+    }
+    std::cout << "Total pop_size = " << pop_size << "\n";
+  }
+
+  void FindHammingDist() {
+    hamming_dist.assign(pop_size, std::vector<int>(pop_size, 0));
+    for (int i = 0; i < pop_size; ++i) {
+      for (int j = 0; j < pop_size; ++j) {
+        for (int k = 0; k < shops; ++k) {
+          if (population[i][k] != population[j][k]) {
+            ++hamming_dist[i][j];
+          }
+        }
+      }
+    }
+    static std::ofstream output_file("ham_dist.txt");
+    for (int i = 0; i < pop_size; ++i) {
+      for (int j = 0; j < pop_size; ++j) {
+        output_file << std::setw(3) << hamming_dist[i][j] << ", ";
+      }
+      output_file << "\n";
+    }
+    output_file << "#############################" << shops << "#####################" << std::endl;
+  }
+
+  Ans DPX(int first, int second) {
+    Ans ans;
+    ans.first.resize(shops, false);
+    std::vector<int> mismatch;
+    for (int i = 0; i < shops; ++i) {
+      if (population[first][i] && population[second][i]) {
+        ans.first[i] = true;
+        continue;
+      }
+      if (population[first][i] || population[second][i]) {
+        mismatch.push_back(i);
+      }
+    }
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<long double> dis(0.0, 1.0);
+    while (MaskFitness(ans.first) > cInfty - cEps) {
+      if (mismatch.empty()) {
+        for (int i = 0; i < shops; ++i) {
+          if (population[first][i] || population[second][i]) {
+            ans.first[i] = true;
+          }
+        }
+        ans.second = MaskFitness(ans.first);
+        return ans;
+      }
+      for (int i = 0; i < mismatch.size(); ++i) {
+        db value = dis(gen);
+        if (value <= 0.5) {
+          ans.first[mismatch[i]] = true;
+          mismatch[i] = -1;
+        }
+      }
+      std::vector<int> mismatch_swap;
+      for (int i = 0; i < mismatch.size(); ++i) {
+        if (mismatch[i] != -1) {
+          mismatch_swap.push_back(mismatch[i]);
+        }
+      }
+      std::swap(mismatch, mismatch_swap);
+    }
+    ans.second = cur_ans_val;
+    return ans;
+  }
+
+  void Compete(std::set<int>& pass, std::vector<SPair1>& best_values, std::vector<int>& not_pass) {
+    std::vector<int> left_ind;
+    for (int i = safe_zone; i < pop_size + child_size; ++i) {
+      left_ind.push_back(i);
+    }
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    while (static_cast<int>(left_ind.size()) > pop_size - safe_zone) {
+      std::uniform_int_distribution<int> dis(0, static_cast<int>(left_ind.size()) - 1);
+      int first = dis(gen);
+      int second = dis(gen);
+      while (first  == second) {
+        second = dis(gen);
+      }
+      if (best_values[left_ind[first]].second < best_values[left_ind[second]].second) {
+        if (best_values[left_ind[second]].first < pop_size) {
+          not_pass.push_back(best_values[left_ind[second]].first);
+        }
+        std::swap(left_ind[second], left_ind[left_ind.size() - 1]);
+        left_ind.pop_back();
+      } else {
+        if (best_values[left_ind[first]].first < pop_size) {
+          not_pass.push_back(best_values[left_ind[first]].first);
+        }
+        std::swap(left_ind[first], left_ind[left_ind.size() - 1]);
+        left_ind.pop_back();
+      }
+    }
+    for (int i = 0; i < left_ind.size(); ++i) {
+      pass.insert(best_values[left_ind[i]].first);
+    }
+  }
+
+  bool Converged() {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<int> dis(0, pop_size - 1);
+    db average = 0;
+    for (int i = 0; i < corv_attempts; ++i) {
+      int first = dis(gen);
+      int second = dis(gen);
+      while (first == second) {
+        second = dis(gen);
+      }
+      for (int j = 0; j < shops; ++j) {
+        if (population[first][j] != population[second][j]) {
+          average += 1;
+        }
+      }
+    }
+    average /= corv_attempts;
+    if (average < corv_alpha * shops) {
+      std::cout << "Reason to break is: " << average << "\n";
+    }
+    return average < corv_alpha * shops;
+  }
+
+  void Mutation(int pos) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<int> dis(0, shops - 1);
+    for (int i = 0; i < mut_pos; ++i) {
+      int bit = dis(gen);
+      while (population[pos][bit]) {
+        bit = dis(gen);
+      }
+      population[pos][bit] = true;
+    }
+    pop_values[pos] = MaskFitness(population[pos]);
+  }
+
+  void Genetics() {
+    static std::ofstream output_file("iter.txt");
+    output_file << std::fixed << std::setprecision(2);
+    GenPopulation();
+    auto start = std::chrono::steady_clock::now();
+    int iterations = 0;
+    while (true) {
+      //FindHammingDist();
+      if (Converged()) {
+        break;
+      }
+      auto end = std::chrono::steady_clock::now();
+      auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
+      if (duration.count() > gen_time) {
+        break;
+      }
+      ++iterations;
+      std::vector<Ans> childs;
+      std::random_device rd;
+      std::mt19937 gen(rd());
+      std::uniform_int_distribution<int> dis(0, pop_size - 1);
+      for (int i = 0; i < child_size; ++i) {
+        int first = dis(gen);
+        int second = dis(gen);
+        while (second == first) {
+          second = dis(gen);
+        }
+        childs.push_back(DPX(first, second));
+      }
+      std::vector<SPair1> best_values;
+      for (int i = 0; i < pop_size + child_size; ++i) {
+        if (i < pop_size) {
+          best_values.push_back(SPair1(i, pop_values[i]));
+        } else {
+          best_values.push_back(SPair1(i, childs[i - pop_size].second));
+        }
+      }
+      std::sort(best_values.begin(), best_values.end(), Comp1);
+      output_file << "On iteration " << iterations << " best metric is: " << best_values[0].second << std::endl;
+      std::set<int> pass;
+      std::vector<int> not_pass;
+      for (int i = 0; i < safe_zone; ++i) {
+        pass.insert(best_values[i].first);
+      }
+      Compete(pass, best_values, not_pass);
+      for (int index : pass) {
+        if (index >= pop_size) {
+          int place = not_pass.back();
+          not_pass.pop_back();
+          population[place] = childs[index - pop_size].first;
+          pop_values[place] = childs[index - pop_size].second;
+        }
+      }
+      std::uniform_real_distribution<long double> mutate(0.0, 1.0);
+      for (int i = 0; i < pop_size; ++i) {
+        if (mutate(gen) < mut_prob) {
+          Mutation(i);
+        }
+      }
+    }
+    output_file << std::endl << "##############################" << std::endl;
+    std::cout << "Iterations number is: " << iterations << std::endl;
   }
 
  public:
 
   FacilitySolver(std::string path, std::ostringstream& out) {
     InputData(path);
+    shufle.reserve(people);
+    for (int i = 0; i < people; ++i) {
+      shufle.push_back(i);
+    }
     cur_ans.resize(people, -1);
     best_ans.resize(people, -1);
     SetGuyPreference();
     ClosestEur();
-    OneTwoOpt();
+    GeneralGreedy();
+
+    Genetics();
     OutputData(out);
   }
 };

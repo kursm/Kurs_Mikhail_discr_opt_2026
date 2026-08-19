@@ -83,11 +83,13 @@ bool Correct(std::string ans, int test) {
 
 int main() {
   int sum = 0;
+  std::ofstream output_file("output.txt");
   for (int i = 0; i < 6; ++i) {
     auto start = std::chrono::steady_clock::now();
     std::ostringstream out;
     FacilitySolver sol(path + tests[i], out);
     std::string ans = out.str();
+    output_file << "Test " << tests[i] << ":\n" << ans << std::endl;
     std::cout << std::fixed << std::setprecision(2);
     if (Correct(ans, i)) {
       std::cout << "Test " << i + 1 << ": correct answer; "; 
