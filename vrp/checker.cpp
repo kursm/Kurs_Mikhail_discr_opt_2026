@@ -36,11 +36,8 @@ bool Correct(std::string ans, int test) {
   int v;
   dob c;
   input_file >> n >> v >> c;
-  std::vector<Point> points(n + 1);
-  points[0].demand = 0;
-  points[0].x = 0;
-  points[0].y = 0;
-  for (int i = 1; i <= n; ++i) {
+  std::vector<Point> points(n);
+  for (int i = 0; i < n; ++i) {
     input_file >> points[i].demand >> points[i].x >> points[i].y;
   }
   std::istringstream inn(ans);
@@ -61,7 +58,7 @@ bool Correct(std::string ans, int test) {
   if (static_cast<int>(order.size()) != v) {
     return false;
   }
-  std::vector<int> visits(n + 1, 0);
+  std::vector<int> visits(n, 0);
   dob ans_sum = 0;
   for (int i = 0; i < v; ++i) {
     const std::vector<int>& route = order[i];
@@ -75,7 +72,7 @@ bool Correct(std::string ans, int test) {
     for (size_t j = 0; j + 1 < route.size(); ++j) {
       int a = route[j];
       int b = route[j + 1];
-      if (a < 0 || a > n || b < 0 || b > n) {
+      if (a < 0 || a >= n || b < 0 || b >= n) {
         return false;
       }
       ans_sum += Dist(points[a], points[b]);
@@ -92,7 +89,7 @@ bool Correct(std::string ans, int test) {
   if (visits[0] != v)  {
     return false;
   }
-  for (int node = 1; node <= n; ++node) {
+  for (int node = 1; node < n; ++node) {
     if (visits[node] != 1) {
       return false;
     }
@@ -116,7 +113,7 @@ int main() {
       continue;
     }
     std::string ans = out.str();
-    std::cout << std::fixed << std::setprecision(3);
+    std::cout << std::fixed << std::setprecision(2);
     if (Correct(ans, i)) {
       std::cout << "Test " << i + 1 << ": correct answer; "; 
     } else {
